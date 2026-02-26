@@ -1,0 +1,31 @@
+# Go 编译输出
+/bin/
+/build/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go 依赖缓存
+vendor/
+
+# 编辑器/IDE 文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志和临时文件
+*.log
+*.tmp
+
+# 覆盖率文件
+coverage.out
