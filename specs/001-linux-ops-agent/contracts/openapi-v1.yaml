@@ -1,0 +1,76 @@
+openapi: 3.1.0
+info:
+  title: Mingyue Linux Ops Agent API
+  version: 1.0.0
+  description: |
+    Linux 系统操作代理 v1 API（草案）。
+    说明：本文件为契约源（OpenAPI-first）。实现阶段需补齐所有端点与 schema，并通过校验/生成机制避免漂移。
+servers:
+  - url: http://127.0.0.1:8080/api/v1
+security:
+  - ApiKeyAuth: []
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    examples: ["ok"]
+  /host/snapshot:
+    get:
+      summary: Get host snapshot
+      responses:
+        "200":
+          description: Host snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostSnapshot"
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        request_id:
+          type: string
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+      required: [error]
+    HostSnapshot:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        cpu:
+          type: object
+          additionalProperties: true
+        memory:
+          type: object
+          additionalProperties: true
+        disk:
+          type: object
+          additionalProperties: true
+      required: [timestamp]
