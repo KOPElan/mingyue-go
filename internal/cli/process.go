@@ -35,7 +35,9 @@ func newProcessListCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
-			mgr := procService.NewManager(audit.NewFileLogger(""))
+			logger := audit.NewFileLogger("")
+			defer logger.Close()
+			mgr := procService.NewManager(logger)
 			procs, total, err := mgr.List(ctx, procService.ListOptions{Limit: limit, Page: page})
 			if err != nil {
 				return err
@@ -79,7 +81,9 @@ func newProcessGetCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			mgr := procService.NewManager(audit.NewFileLogger(""))
+			logger := audit.NewFileLogger("")
+			defer logger.Close()
+			mgr := procService.NewManager(logger)
 			proc, err := mgr.Get(ctx, pid)
 			if err != nil {
 				return err
@@ -116,7 +120,9 @@ func newProcessKillCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			mgr := procService.NewManager(audit.NewFileLogger(""))
+			logger := audit.NewFileLogger("")
+			defer logger.Close()
+			mgr := procService.NewManager(logger)
 			if err := mgr.Kill(ctx, pid, "cli"); err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err)
 				return err

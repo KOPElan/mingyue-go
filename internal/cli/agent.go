@@ -42,7 +42,9 @@ func newAgentStartCmd() *cobra.Command {
 					d.ListenAddr, d.PIDPath)
 			}
 
-			return d.Start(api.NewRouter())
+			router := api.NewRouter()
+			defer router.Close()
+			return d.Start(router)
 		},
 	}
 

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"testing"
 
 	"kopelan/mingyue-go/internal/api"
@@ -285,6 +287,34 @@ func TestProcessGet_NotFound(t *testing.T) {
 		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusNotFound, w.Body.String())
 	}
 	checkAppError(t, w, apperrors.ErrNotFound)
+}
+
+func TestProcessKill_Success_OperatorRole(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addOperatorToken()
+
+	// Start a child process that we can safely terminate.
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("could not start child process: %v", err)
+	}
+	t.Cleanup(func() {
+		// Ensure the child is reaped even if the test fails before the kill.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	childPID := cmd.Process.Pid
+	req := httptest.NewRequest(http.MethodDelete,
+		fmt.Sprintf("/api/v1/processes/%d", childPID), nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusNoContent, w.Body.String())
+	}
 }
 
 func TestProcessKill_Forbidden_ViewerRole(t *testing.T) {

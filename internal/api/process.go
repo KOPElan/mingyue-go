@@ -123,6 +123,9 @@ func parsePIDFromPath(path string) (int32, error) {
 			if err != nil {
 				return 0, err
 			}
+			if n <= 0 {
+				return 0, apperrors.New(apperrors.ErrInvalidInput, "pid must be positive")
+			}
 			return int32(n), nil
 		}
 	}

@@ -3,6 +3,7 @@
 package api
 
 import (
+	"io"
 	"net/http"
 
 	"kopelan/mingyue-go/internal/api/middleware"
@@ -11,14 +12,35 @@ import (
 	sysService "kopelan/mingyue-go/internal/service/system"
 )
 
-// NewRouter returns an http.Handler with all /api/v1 routes registered.
+// Router wraps an http.Handler and owns the resources it was built with.
+// Call Close when the server shuts down to release the audit log file handle.
+type Router struct {
+	http.Handler
+	auditLogger io.Closer
+}
+
+// Close releases resources held by the router (e.g. the audit log file).
+// It is safe to call Close multiple times; subsequent calls are no-ops if
+// the underlying logger does not hold additional resources.
+func (r *Router) Close() error {
+	if r.auditLogger != nil {
+		return r.auditLogger.Close()
+	}
+	return nil
+}
+
+// NewRouter returns a Router with all /api/v1 routes registered.
 // Middleware is applied in the order: auth → handler.
-func NewRouter() http.Handler {
+// The caller must call Close() when the server shuts down.
+func NewRouter() *Router {
 	monitor := sysService.NewMonitor()
 	auditLogger := audit.NewFileLogger("")
 	procMgr := procService.NewManager(auditLogger)
 
-	return NewRouterWithDeps(monitor, procMgr)
+	return &Router{
+		Handler:     NewRouterWithDeps(monitor, procMgr),
+		auditLogger: auditLogger,
+	}
 }
 
 // NewRouterWithDeps creates a router with injected dependencies.

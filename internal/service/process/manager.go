@@ -5,6 +5,7 @@ package process
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -103,17 +104,19 @@ func (m *Manager) Get(ctx context.Context, pid int32) (*domain.Process, error) {
 // Kill sends SIGTERM to the process with the given PID.
 // source identifies the caller ("cli" or a remote address) and is recorded in
 // the audit log.  Returns ErrForbidden when the current user lacks permission
-// to send signals to the target process.
+// to send signals to the target process, and ErrNotFound when no such process
+// exists (ESRCH).
+//
+// Note: on Linux os.FindProcess always succeeds; the real validation occurs
+// when the signal is sent.
 func (m *Manager) Kill(ctx context.Context, pid int32, source string) error {
-	proc, err := os.FindProcess(int(pid))
-	if err != nil {
-		m.logAudit(source, pid, "failure", apperrors.ErrNotFound)
-		return apperrors.Wrap(apperrors.ErrNotFound, fmt.Sprintf("process %d not found", pid), err)
-	}
+	proc, _ := os.FindProcess(int(pid))
 
 	if err := proc.Signal(syscall.SIGTERM); err != nil {
 		code := apperrors.ErrInternal
-		if isPermissionError(err) {
+		if errors.Is(err, syscall.ESRCH) {
+			code = apperrors.ErrNotFound
+		} else if isPermissionError(err) {
 			code = apperrors.ErrForbidden
 		}
 		m.logAudit(source, pid, "failure", code)
