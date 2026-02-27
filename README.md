@@ -80,23 +80,26 @@ go build -o mingyue ./cmd/mingyue
 
 ### 运行（守护进程模式）
 
-以守护进程方式启动，对外提供 RESTful HTTP+JSON API（默认端口 `8080`，路径前缀 `/api/v1`）：
+以守护进程方式启动，对外提供 RESTful HTTP+JSON API（默认端口 `7070`，路径前缀 `/api/v1`）：
 
 ```sh
 # 启动守护进程
 ./mingyue agent start
 
-# 验证健康检查
-curl http://localhost:8080/api/v1/health
+# 验证健康检查（无需认证）
+curl http://localhost:7070/api/v1/health
 
-# 获取系统概览
-curl http://localhost:8080/api/v1/system/overview
+# 获取系统概览（需要 Bearer Token）
+curl -H "Authorization: Bearer <api-key>" http://localhost:7070/api/v1/system/overview
 
-# 获取进程列表
-curl http://localhost:8080/api/v1/processes?limit=20
+# 获取进程列表（支持分页）
+curl -H "Authorization: Bearer <api-key>" "http://localhost:7070/api/v1/processes?limit=20&page=1"
 
-# 查看挂载信息
-curl http://localhost:8080/api/v1/disks/mounts
+# 查询指定进程
+curl -H "Authorization: Bearer <api-key>" http://localhost:7070/api/v1/processes/1
+
+# 终止进程（需要 operator 或 admin 角色）
+curl -X DELETE -H "Authorization: Bearer <api-key>" http://localhost:7070/api/v1/processes/1234
 
 # 查看守护进程状态
 ./mingyue agent status
@@ -122,19 +125,53 @@ sudo bash scripts/uninstall.sh
 
 安装脚本会自动完成：检测 systemd 环境、复制二进制文件、创建 systemd service unit、启动服务。
 
+## API 认证
+
+守护进程使用 **Bearer Token（API Key）** 认证。未认证请求返回 `401 UNAUTHORIZED`，权限不足返回 `403 FORBIDDEN`。
+
+**注册 API Key（程序初始化时调用）**
+
+```go
+auth.RegisterAPIKey("my-secret-key", auth.Token{
+    Raw:     "my-secret-key",
+    Role:    auth.RoleOperator,
+    Subject: "ops-user",
+})
+```
+
+**请求示例**
+
+```sh
+curl -H "Authorization: Bearer my-secret-key" \
+     http://localhost:7070/api/v1/system/overview
+```
+
+**角色说明**
+
+| 角色 | 允许操作 |
+|------|----------|
+| `viewer` | 所有只读操作（系统概览、进程列表/查询等） |
+| `operator` | 只读操作 + 进程终止（`DELETE /processes/{pid}`） |
+| `admin` | 全部操作 |
+
+详细 API 契约请参阅 [`specs/001-linux-ops-agent/contracts/api-routes.md`](specs/001-linux-ops-agent/contracts/api-routes.md)。
+
 ## API 文档
 
-项目提供 OpenAPI v3 规范文件，位于：
+详细端点契约文档位于：
+
+```
+specs/001-linux-ops-agent/contracts/
+├── api-routes.md       # HTTP API 路由契约（请求/响应/错误结构）
+└── cli-commands.md     # CLI 命令契约（参数/输出字段/退出码）
+```
+
+项目预留 OpenAPI v3 规范文件路径（Phase 6 交付）：
 
 ```
 docs/api/openapi.yaml    # YAML 格式（主要版本）
 docs/api/openapi.json    # JSON 格式（按需使用）
 ```
-
-规范文件覆盖 v1 全量端点，包含认证方式、请求/响应结构与错误结构，可直接用于：
-- 生成强类型客户端（`oapi-codegen`、`openapi-generator` 等）
-- 在 Swagger UI / Redoc 中渲染交互式文档
-- 集成到 Web 可视化管理平台
 
 所有 API 端点位于路径前缀 `/api/v1`，返回 HTTP+JSON，错误响应包含机器可解析的错误码与人类可读信息。
 
@@ -265,14 +302,14 @@ go vet ./...
 
 ## 里程碑
 
-| 阶段 | 内容 | 预计周期 |
-|------|------|----------|
-| **Phase 1** | 基础骨架：CLI 框架、守护进程框架、HTTP API 基础、统一错误结构、认证鉴权草案、审计日志骨架、CI 基础 | 2 周 |
-| **Phase 2** | 系统监控 + 进程管理：CPU/内存/磁盘概览、进程列表与终止、CLI/API 对齐 | 2 周 |
-| **Phase 3** | 磁盘管理：本地挂载/卸载、CIFS/NFS 挂载/卸载、SMART 信息、幂等与审计 | 2 周 |
-| **Phase 4** | 文件管理 + 共享管理：文件操作（路径安全）、Samba/NFS 共享 CRUD、审计日志完善 | 2 周+ |
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| **Phase 1** ✅ | 基础骨架：CLI 框架、守护进程框架、HTTP API 基础、统一错误结构、认证鉴权草案、审计日志骨架、CI 基础 | 已完成 |
+| **Phase 2** ✅ | 系统监控 + 进程管理：CPU/内存/磁盘概览、进程列表与终止、CLI/API 对齐、Bearer Token 认证 | 已完成 |
+| **Phase 3** | 磁盘管理：本地挂载/卸载、CIFS/NFS 挂载/卸载、SMART 信息、幂等与审计 | 规划中 |
+| **Phase 4** | 文件管理 + 共享管理：文件操作（路径安全）、Samba/NFS 共享 CRUD、审计日志完善 | 规划中 |
 | **Phase 5** | 网络管理 + 权限/ACL（P1 迭代） | 待定 |
-| **Phase 6** | OpenAPI 规范 + CI 文档同步 + 安装脚本（`install.sh`）+ README | 1 周 |
+| **Phase 6** | OpenAPI 规范 + CI 文档同步 + 安装脚本（`install.sh`）+ README | 待定 |
 
 ## License
 

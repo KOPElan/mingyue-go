@@ -53,6 +53,8 @@ func init() {
 	// Register sub-commands.
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newAgentCmd())
+	rootCmd.AddCommand(newSystemCmd())
+	rootCmd.AddCommand(newProcessCmd())
 }
 
 // IsJSONOutput returns true when the global --json flag is set.
