@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -36,6 +42,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Set binary name
         id: bin
         run: |
@@ -52,10 +64,10 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           LDFLAGS="-s -w \
-            -X kopelan/mingyue-go/internal/cli.BuildVersion=${{ github.ref_name }} \
+            -X kopelan/mingyue-go/internal/cli.BuildVersion=${{ steps.version.outputs.value }} \
             -X kopelan/mingyue-go/internal/cli.BuildCommit=${{ github.sha }} \
             -X kopelan/mingyue-go/internal/cli.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-            -X kopelan/mingyue-go/internal/api.Version=${{ github.ref_name }}"
+            -X kopelan/mingyue-go/internal/api.Version=${{ steps.version.outputs.value }}"
           go build -trimpath -ldflags="${LDFLAGS}" -o ${{ steps.bin.outputs.name }} ./cmd/mingyue
 
       - name: Upload artifact
@@ -80,5 +92,6 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: dist/*
           generate_release_notes: true
