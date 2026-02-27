@@ -34,7 +34,7 @@ func newAgentStartCmd() *cobra.Command {
 				_ = WriteJSON(map[string]string{
 					"status":  "starting",
 					"address": d.ListenAddr,
-					"pid_file": d.PIDPath,
+					"pidFile": d.PIDPath,
 				})
 			} else {
 				fmt.Printf("Starting mingyue daemon on %s (pid file: %s)\n",

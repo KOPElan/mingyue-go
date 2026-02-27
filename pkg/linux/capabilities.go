@@ -14,7 +14,7 @@ const (
 	CapNetAdmin  Capability = "cap_net_admin"
 	CapSysNice   Capability = "cap_sys_nice"
 	CapKill      Capability = "cap_kill"
-	CapDACSSetID Capability = "cap_dac_override"
+	CapDACOverride Capability = "cap_dac_override"
 )
 
 // HasCapability reports whether the current process has the named capability
@@ -67,7 +67,7 @@ func IsRoot() bool {
 // Linux capability word.  Only capabilities used by the agent are listed.
 func capabilityBit(cap Capability) (uint, bool) {
 	bits := map[Capability]uint{
-		CapDACSSetID: 1,  // CAP_DAC_OVERRIDE
+		CapDACOverride: 1,  // CAP_DAC_OVERRIDE
 		CapKill:      5,  // CAP_KILL
 		CapSysNice:   23, // CAP_SYS_NICE
 		CapNetAdmin:  12, // CAP_NET_ADMIN
