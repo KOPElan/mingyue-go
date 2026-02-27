@@ -24,4 +24,9 @@ jobs:
       - name: 构建
         run: go build ./...
       - name: 运行测试
-        run: go test ./...
+        run: |
+          if go list ./... 2>/dev/null | grep -q .; then
+            go test ./...
+          else
+            echo "No Go packages to test yet"
+          fi
