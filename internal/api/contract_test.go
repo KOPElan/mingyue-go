@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"kopelan/mingyue-go/internal/auth"
 	"kopelan/mingyue-go/internal/domain"
 	apperrors "kopelan/mingyue-go/internal/errors"
+	diskService "kopelan/mingyue-go/internal/service/disk"
 	fileService "kopelan/mingyue-go/internal/service/file"
 	procService "kopelan/mingyue-go/internal/service/process"
 	shareService "kopelan/mingyue-go/internal/service/share"
@@ -140,6 +142,28 @@ func (b *stubShareBackend) Reload(_ context.Context) error { return nil }
 // compile-time check that stubShareBackend implements shareService.Backend.
 var _ shareService.Backend = (*stubShareBackend)(nil)
 
+// stubMountsReader is a test double for diskService.MountsReader.
+type stubMountsReader struct {
+	content string
+	err     error
+}
+
+func (r *stubMountsReader) ReadMounts() (io.ReadCloser, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return io.NopCloser(strings.NewReader(r.content)), nil
+}
+
+// stubSmartCommander is a test double for diskService.Commander (SMART only).
+type stubSmartCommander struct {
+	output []byte
+	err    error
+}
+
+func (c *stubSmartCommander) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	return c.output, c.err
+}
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 func testSnap() *domain.HostSnapshot {
@@ -166,9 +190,11 @@ func testProcs() ([]int32, map[int32]*domain.Process) {
 func buildRouter(collector sysService.Collector, lister procService.ProcessLister) http.Handler {
 	monitor := sysService.NewMonitorWithCollector(collector)
 	procMgr := procService.NewManagerWithLister(lister, nil)
+	mountSvc := diskService.NewMountServiceWithDeps(&stubMountsReader{}, &stubCommanderNoErr{}, nil)
+	smartSvc := diskService.NewSmartServiceWithCommander(&stubSmartCommander{})
 	fileMgr := fileService.NewManagerWithFS("/", nil, &stubFS{})
 	shareMgr := shareService.NewManagerWithBackend(&stubShareBackend{}, nil)
-	return api.NewRouterWithDeps(monitor, procMgr, fileMgr, shareMgr)
+	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, fileMgr, shareMgr)
 }
 
 // addViewerToken registers a viewer-role API key and returns an
@@ -432,6 +458,27 @@ func checkAppError(t *testing.T, w *httptest.ResponseRecorder, wantCode apperror
 	}
 }
 
+
+// buildDiskRouter creates a test router with disk stubs, using the provided
+// mounts reader and smart commander.
+func buildDiskRouter(reader diskService.MountsReader, smartCmd diskService.Commander) http.Handler {
+	pids, procs := testProcs()
+	monitor := sysService.NewMonitorWithCollector(&stubSysCollector{snap: testSnap()})
+	procMgr := procService.NewManagerWithLister(&stubProcessLister{pids: pids, procs: procs}, nil)
+	mountSvc := diskService.NewMountServiceWithDeps(reader, &stubCommanderNoErr{}, nil)
+	smartSvc := diskService.NewSmartServiceWithCommander(smartCmd)
+	fileMgr := fileService.NewManagerWithFS("/", nil, &stubFS{})
+	shareMgr := shareService.NewManagerWithBackend(&stubShareBackend{}, nil)
+	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, fileMgr, shareMgr)
+}
+
+// stubCommanderNoErr is a Commander stub that always succeeds.
+type stubCommanderNoErr struct{}
+
+func (c *stubCommanderNoErr) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	return nil, nil
+}
+
 // ─── /api/v1/files ───────────────────────────────────────────────────────────
 
 func TestFileList_Unauthenticated(t *testing.T) {
@@ -576,6 +623,221 @@ func TestShareDelete_Forbidden_ViewerRole(t *testing.T) {
 		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusForbidden, w.Body.String())
 	}
 	checkAppError(t, w, apperrors.ErrForbidden)
+}
+
+// ─── /api/v1/disks/mounts (GET) ──────────────────────────────────────────────
+
+const sampleProcMounts = `/dev/sda1 / ext4 rw,relatime 0 0
+/dev/sdb1 /mnt/data ext4 rw,relatime 0 0
+`
+
+func TestDiskMountList_Success(t *testing.T) {
+	reader := &stubMountsReader{content: sampleProcMounts}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/disks/mounts", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Mounts []domain.Mount `json:"mounts"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Mounts) != 2 {
+		t.Errorf("len(mounts): got %d, want 2", len(resp.Mounts))
+	}
+}
+
+func TestDiskMountList_Unauthenticated(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/disks/mounts", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// ─── /api/v1/disks/mounts (POST) ─────────────────────────────────────────────
+
+func TestDiskMount_Success_OperatorRole(t *testing.T) {
+	reader := &stubMountsReader{content: ""} // no existing mounts
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addOperatorToken()
+
+	body := strings.NewReader(`{"source":"/dev/sdb1","mount_point":"/mnt/test","fs_type":"ext4"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/disks/mounts", body)
+	req.Header.Set("Authorization", token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+}
+
+func TestDiskMount_AlreadyMounted_Conflict(t *testing.T) {
+	reader := &stubMountsReader{content: sampleProcMounts} // /mnt/data already mounted
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addOperatorToken()
+
+	body := strings.NewReader(`{"source":"/dev/sdb1","mount_point":"/mnt/data","fs_type":"ext4"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/disks/mounts", body)
+	req.Header.Set("Authorization", token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusConflict, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrConflict)
+}
+
+func TestDiskMount_Forbidden_ViewerRole(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addViewerToken()
+
+	body := strings.NewReader(`{"source":"/dev/sdb1","mount_point":"/mnt/test","fs_type":"ext4"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/disks/mounts", body)
+	req.Header.Set("Authorization", token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusForbidden)
+	}
+	checkAppError(t, w, apperrors.ErrForbidden)
+}
+
+// ─── /api/v1/disks/mounts/{mountpoint} (DELETE) ──────────────────────────────
+
+func TestDiskUmount_Success_OperatorRole(t *testing.T) {
+	reader := &stubMountsReader{content: sampleProcMounts}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addOperatorToken()
+
+	// URL-encode the mountpoint: /mnt/data → %2Fmnt%2Fdata
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/disks/mounts/%2Fmnt%2Fdata", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusNoContent, w.Body.String())
+	}
+}
+
+func TestDiskUmount_NotMounted_NotFound(t *testing.T) {
+	reader := &stubMountsReader{content: sampleProcMounts}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addOperatorToken()
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/disks/mounts/%2Fmnt%2Fnonexistent", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrNotFound)
+}
+
+func TestDiskUmount_Forbidden_ViewerRole(t *testing.T) {
+	reader := &stubMountsReader{content: sampleProcMounts}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/disks/mounts/%2Fmnt%2Fdata", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
+// ─── /api/v1/disks/{device}/smart (GET) ──────────────────────────────────────
+
+const sampleSmartJSON = `{
+  "model_name": "Samsung SSD",
+  "serial_number": "ABC123",
+  "smart_status": {"passed": true},
+  "temperature": {"current": 30},
+  "power_on_time": {"hours": 1000}
+}`
+
+func TestDiskSmart_Success(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	smartCmd := &stubSmartCommander{output: []byte(sampleSmartJSON)}
+	handler := buildDiskRouter(reader, smartCmd)
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/disks/sda/smart", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var health domain.DiskHealth
+	if err := json.NewDecoder(w.Body).Decode(&health); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !health.HealthOK {
+		t.Error("HealthOK: expected true")
+	}
+	if health.Model != "Samsung SSD" {
+		t.Errorf("Model: got %q", health.Model)
+	}
+}
+
+func TestDiskSmart_NotFound_BinaryMissing(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	smartCmd := &stubSmartCommander{
+		err: &exec.Error{Name: "smartctl", Err: exec.ErrNotFound},
+	}
+	handler := buildDiskRouter(reader, smartCmd)
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/disks/sda/smart", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrNotFound)
+}
+
+func TestDiskSmart_Unauthenticated(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/disks/sda/smart", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
 }
 
 // ─── file write role enforcement ─────────────────────────────────────────────

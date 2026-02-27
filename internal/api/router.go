@@ -8,6 +8,7 @@ import (
 
 	"kopelan/mingyue-go/internal/api/middleware"
 	"kopelan/mingyue-go/internal/audit"
+	diskService "kopelan/mingyue-go/internal/service/disk"
 	fileService "kopelan/mingyue-go/internal/service/file"
 	procService "kopelan/mingyue-go/internal/service/process"
 	shareService "kopelan/mingyue-go/internal/service/share"
@@ -38,11 +39,13 @@ func NewRouter() *Router {
 	monitor := sysService.NewMonitor()
 	auditLogger := audit.NewFileLogger("")
 	procMgr := procService.NewManager(auditLogger)
+	mountSvc := diskService.NewMountService(auditLogger)
+	smartSvc := diskService.NewSmartService()
 	fileMgr := fileService.NewManager("", auditLogger)
 	shareMgr := shareService.NewManager(auditLogger)
 
 	return &Router{
-		Handler:     NewRouterWithDeps(monitor, procMgr, fileMgr, shareMgr),
+		Handler:     NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, fileMgr, shareMgr),
 		auditLogger: auditLogger,
 	}
 }
@@ -52,6 +55,8 @@ func NewRouter() *Router {
 func NewRouterWithDeps(
 	monitor *sysService.Monitor,
 	procMgr *procService.Manager,
+	mountSvc *diskService.MountService,
+	smartSvc *diskService.SmartService,
 	fileMgr *fileService.Manager,
 	shareMgr *shareService.Manager,
 ) http.Handler {
@@ -65,24 +70,36 @@ func NewRouterWithDeps(
 	mux.HandleFunc("/api/v1/version", VersionHandler)
 
 	// ── Authenticated routes ──────────────────────────────────────────────
-	authMw := middleware.Auth
+	auth := middleware.Auth
 
 	// System overview — read-only; any authenticated role.
-	mux.Handle("/api/v1/system/overview", authMw(systemOverviewHandler(monitor)))
+	mux.Handle("/api/v1/system/overview", auth(systemOverviewHandler(monitor)))
 
 	// Process list and single-process get — read-only; any authenticated role.
-	mux.Handle("/api/v1/processes", authMw(processListHandler(procMgr)))
+	mux.Handle("/api/v1/processes", auth(processListHandler(procMgr)))
 
 	// Process individual routes (get + kill share the /processes/{pid} prefix).
-	mux.Handle("/api/v1/processes/", authMw(processDispatchHandler(procMgr)))
+	mux.Handle("/api/v1/processes/", auth(processDispatchHandler(procMgr)))
 
 	// ── File management routes ────────────────────────────────────────────
-	mux.Handle("/api/v1/files", authMw(fileRootHandler(fileMgr)))
-	mux.Handle("/api/v1/files/", authMw(fileDispatchHandler(fileMgr)))
+	mux.Handle("/api/v1/files", auth(fileRootHandler(fileMgr)))
+	mux.Handle("/api/v1/files/", auth(fileDispatchHandler(fileMgr)))
 
 	// ── Share management routes ───────────────────────────────────────────
-	mux.Handle("/api/v1/shares", authMw(shareRootHandler(shareMgr)))
-	mux.Handle("/api/v1/shares/", authMw(shareDispatchHandler(shareMgr)))
+	mux.Handle("/api/v1/shares", auth(shareRootHandler(shareMgr)))
+	mux.Handle("/api/v1/shares/", auth(shareDispatchHandler(shareMgr)))
+
+	// ── Disk / mount routes ───────────────────────────────────────────────
+
+	// Exact: GET (list) + POST (create) on /api/v1/disks/mounts.
+	mux.Handle("/api/v1/disks/mounts", auth(diskMountsHandler(mountSvc)))
+
+	// Subtree: DELETE /api/v1/disks/mounts/{mountpoint} (URL-encoded mountpoint).
+	// More specific than /api/v1/disks/ so it wins for mounts paths.
+	mux.Handle("/api/v1/disks/mounts/", auth(diskMountDeleteHandler(mountSvc)))
+
+	// Subtree: GET /api/v1/disks/{device}/smart (URL-encoded or short device name).
+	mux.Handle("/api/v1/disks/", auth(diskDeviceHandler(smartSvc)))
 
 	return mux
 }

@@ -55,6 +55,7 @@ func init() {
 	rootCmd.AddCommand(newAgentCmd())
 	rootCmd.AddCommand(newSystemCmd())
 	rootCmd.AddCommand(newProcessCmd())
+	rootCmd.AddCommand(newDiskCmd())
 	rootCmd.AddCommand(newFileCmd())
 	rootCmd.AddCommand(newShareCmd())
 }

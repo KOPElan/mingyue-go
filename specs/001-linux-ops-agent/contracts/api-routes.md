@@ -233,6 +233,172 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 
 ---
 
+## Phase 3 端点 — 磁盘与挂载管理
+
+---
+
+### GET /api/v1/disks/mounts
+
+列出当前所有挂载点（读取 `/proc/mounts`）。**需要 viewer 或以上角色**。
+
+**请求**：无参数
+
+**响应 200**
+
+```json
+{
+  "mounts": [
+    {
+      "device": "/dev/sda1",
+      "mount_point": "/",
+      "fs_type": "ext4",
+      "options": "rw,relatime",
+      "total": 0,
+      "used": 0,
+      "free": 0
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `mounts` | array | 挂载点列表 |
+| `mounts[].device` | string | 设备路径或网络路径 |
+| `mounts[].mount_point` | string | 挂载目录 |
+| `mounts[].fs_type` | string | 文件系统类型 |
+| `mounts[].options` | string | 挂载选项 |
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 500 | `INTERNAL` | 读取 /proc/mounts 失败 |
+
+---
+
+### POST /api/v1/disks/mounts
+
+挂载文件系统。**需要 operator 或 admin 角色**。
+
+> CIFS 凭据（username/password/domain）由服务端通过临时凭据文件传递给 mount 命令，**不会回显到响应或写入日志**。
+
+**请求体**
+
+```json
+{
+  "source": "/dev/sdb1",
+  "mount_point": "/mnt/data",
+  "fs_type": "ext4",
+  "read_only": false,
+  "options": "",
+  "username": "",
+  "password": "",
+  "domain": ""
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `source` | string | ✓ | 设备路径或网络路径 |
+| `mount_point` | string | ✓ | 挂载目标目录 |
+| `fs_type` | string | — | 文件系统类型（空字符串表示自动检测） |
+| `read_only` | bool | — | 是否只读挂载 |
+| `options` | string | — | 附加挂载选项（逗号分隔，不含凭据） |
+| `username` | string | — | CIFS 用户名（不记录到日志） |
+| `password` | string | — | CIFS 密码（不记录到日志） |
+| `domain` | string | — | CIFS 域（可选，不记录到日志） |
+
+**响应 201**：无响应体（挂载成功）
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | source 或 mount_point 缺失；请求体格式错误 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 当前角色为 viewer |
+| 409 | `CONFLICT` | 目标挂载点已被挂载（幂等语义） |
+| 500 | `INTERNAL` | mount 命令执行失败 |
+
+> 挂载成功与失败均产生一条审计日志（`action: "disk.mount"`）。
+
+---
+
+### DELETE /api/v1/disks/mounts/{mountpoint}
+
+卸载指定挂载点。**需要 operator 或 admin 角色**。
+
+`{mountpoint}` 须 URL 编码（例如 `/mnt/data` → `%2Fmnt%2Fdata`）。
+
+**路径参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `mountpoint` | string（URL 编码） | 要卸载的挂载点路径 |
+
+**响应 204**：无响应体（卸载成功）
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | mountpoint 路径缺失或编码错误 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 当前角色为 viewer |
+| 404 | `NOT_FOUND` | 指定挂载点当前未挂载（幂等语义） |
+| 500 | `INTERNAL` | umount 命令执行失败（设备忙等） |
+
+> 卸载成功与失败均产生一条审计日志（`action: "disk.umount"`）。
+
+---
+
+### GET /api/v1/disks/{device}/smart
+
+查询指定设备的 SMART 健康信息（调用 `smartctl -j -a`）。**需要 viewer 或以上角色**。
+
+`{device}` 可以是设备短名称（如 `sda`，自动补全为 `/dev/sda`）或 URL 编码的完整路径（如 `%2Fdev%2Fsda`）。
+
+**路径参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `device` | string | 设备名（如 `sda`）或 URL 编码的设备路径 |
+
+**响应 200**
+
+```json
+{
+  "device": "/dev/sda",
+  "model": "Samsung SSD 860 EVO 250GB",
+  "serial": "S3EVNX0K123456",
+  "health_ok": true,
+  "temperature_c": 26,
+  "power_on_hours": 8765
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `device` | string | 设备路径 |
+| `model` | string | 硬盘型号 |
+| `serial` | string | 序列号 |
+| `health_ok` | bool | SMART 自检是否通过（`smart_status.passed`）|
+| `temperature_c` | int | 当前温度（摄氏度） |
+| `power_on_hours` | uint64 | 累计通电时间（小时） |
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 权限不足（需要 root 或 CAP_SYS_RAWIO）|
+| 404 | `NOT_FOUND` | smartctl 未安装（需安装 smartmontools）|
+| 500 | `INTERNAL` | 命令失败或输出无法解析 |
+
+---
+
 ## 审计日志
 
 以下端点在执行时向 `/var/log/mingyue/audit.log` 追加一条 JSON Lines 审计记录：
@@ -240,6 +406,8 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 | 端点 | 触发条件 |
 |------|----------|
 | `DELETE /api/v1/processes/{pid}` | 成功或失败均记录 |
+| `POST /api/v1/disks/mounts` | 成功或失败均记录 |
+| `DELETE /api/v1/disks/mounts/{mountpoint}` | 成功或失败均记录 |
 | `POST /api/v1/files` | 成功或失败均记录（`file.mkdir` 或 `file.write`） |
 | `DELETE /api/v1/files` | 成功或失败均记录（`file.remove`） |
 | `PUT /api/v1/files/move` | 成功或失败均记录（`file.move`） |
