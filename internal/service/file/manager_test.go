@@ -110,6 +110,17 @@ func (f *memFS) WriteFile(path string, data []byte, _ os.FileMode) error {
 	return nil
 }
 
+// EvalSymlinks always returns the path unchanged in the in-memory FS
+// because there are no symlinks.
+func (f *memFS) EvalSymlinks(path string) (string, error) {
+	// Return not-exist for paths that don't exist so the symlink-check
+	// loop in safePath can walk up to an ancestor that does exist.
+	if f.dirs[path] || f.files[path] != nil {
+		return path, nil
+	}
+	return "", &os.PathError{Op: "evalSymlinks", Path: path, Err: os.ErrNotExist}
+}
+
 // memDirEntry satisfies os.DirEntry.
 type memDirEntry struct {
 	name  string

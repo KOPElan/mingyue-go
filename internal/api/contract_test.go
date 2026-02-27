@@ -87,6 +87,7 @@ func (stubFS) Rename(_, _ string) error                                       { 
 func (stubFS) CopyFile(_, _ string) error                                     { return nil }
 func (stubFS) ReadFile(_ string) ([]byte, error)                              { return nil, os.ErrNotExist }
 func (stubFS) WriteFile(_ string, _ []byte, _ os.FileMode) error              { return nil }
+func (stubFS) EvalSymlinks(path string) (string, error)                       { return path, nil }
 
 // stubShareBackend is a minimal no-op share backend for tests.
 type stubShareBackend struct {
@@ -575,4 +576,73 @@ func TestShareDelete_Forbidden_ViewerRole(t *testing.T) {
 		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusForbidden, w.Body.String())
 	}
 	checkAppError(t, w, apperrors.ErrForbidden)
+}
+
+// ─── file write role enforcement ─────────────────────────────────────────────
+
+func TestFileWrite_Forbidden_ViewerRole(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	body := `{"path":"/x","type":"file","content":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files", strings.NewReader(body))
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrForbidden)
+}
+
+func TestFileDelete_Forbidden_ViewerRole(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/files?path=/x", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrForbidden)
+}
+
+func TestFileMove_Forbidden_ViewerRole(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	body := `{"src":"/a","dst":"/b"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/files/move", strings.NewReader(body))
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrForbidden)
+}
+
+func TestFileWrite_InvalidType(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addOperatorToken()
+
+	body := `{"path":"/x","type":"ftp","content":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files", strings.NewReader(body))
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrInvalidInput)
 }

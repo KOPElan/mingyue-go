@@ -11,12 +11,21 @@ import (
 	fileService "kopelan/mingyue-go/internal/service/file"
 )
 
+// fileRoot is the persistent --root flag value shared across all file sub-commands.
+var fileRoot string
+
 func newFileCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "file",
 		Short: "File management commands",
-		Long:  "Commands for listing, reading, writing, and managing files and directories.",
+		Long: `Commands for listing, reading, writing, and managing files and directories.
+
+All operations are scoped to the root directory specified by --root (default: "/").
+Setting --root to a specific path limits access to that directory subtree and
+prevents path-traversal attacks.  In production, always set --root to the
+smallest necessary directory (e.g. /var/lib/mingyue/data).`,
 	}
+	cmd.PersistentFlags().StringVar(&fileRoot, "root", "/", "root directory that constrains all file operations")
 	cmd.AddCommand(newFileListCmd())
 	cmd.AddCommand(newFileStatCmd())
 	cmd.AddCommand(newFileMkdirCmd())
@@ -30,7 +39,7 @@ func newFileCmd() *cobra.Command {
 
 func newFileMgr() (*fileService.Manager, func()) {
 	logger := audit.NewFileLogger("")
-	mgr := fileService.NewManager("", logger)
+	mgr := fileService.NewManager(fileRoot, logger)
 	return mgr, func() { logger.Close() }
 }
 

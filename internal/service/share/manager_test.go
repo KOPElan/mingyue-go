@@ -126,6 +126,24 @@ func TestManager_Create(t *testing.T) {
 	}
 }
 
+func TestManager_Create_NameWithSlash(t *testing.T) {
+	mgr, al := newTestManager()
+
+	bad := domain.Share{Name: "a/b", Type: domain.ShareTypeSamba, Path: "/srv/x"}
+	err := mgr.Create(context.Background(), bad, "test")
+	if err == nil {
+		t.Fatal("expected validation error for name with '/'")
+	}
+	var ae *apperrors.AppError
+	if !errors.As(err, &ae) || ae.Code != apperrors.ErrInvalidInput {
+		t.Errorf("expected ErrInvalidInput, got %v", err)
+	}
+	// Validation failure must also emit an audit event.
+	if len(al.events) == 0 || al.events[0].Result != "failure" {
+		t.Error("expected failure audit event on validation error")
+	}
+}
+
 func TestManager_Create_ValidationFails(t *testing.T) {
 	mgr, _ := newTestManager()
 

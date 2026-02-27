@@ -1,9 +1,12 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 
+	"kopelan/mingyue-go/internal/api/middleware"
+	"kopelan/mingyue-go/internal/auth"
 	apperrors "kopelan/mingyue-go/internal/errors"
 	fileService "kopelan/mingyue-go/internal/service/file"
 )
@@ -65,9 +68,11 @@ func fileStatHandler(mgr *fileService.Manager) http.HandlerFunc {
 	}
 }
 
-// fileWriteHandler handles POST /api/v1/files (create directory or write file)
+// fileWriteHandler handles POST /api/v1/files (create directory or write file).
 //
-//	JSON body: {"path":"...","type":"file"|"dir","content":"<base64 or plain text>"}
+//	JSON body: {"path":"...","type":"file"|"dir","content":"<base64-encoded bytes>"}
+//
+// Requires operator or admin role.
 func fileWriteHandler(mgr *fileService.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -75,10 +80,16 @@ func fileWriteHandler(mgr *fileService.Manager) http.HandlerFunc {
 			return
 		}
 
+		role := middleware.RoleFromContext(r.Context())
+		if !auth.HasRole(role, auth.RoleOperator) {
+			writeAppError(w, apperrors.New(apperrors.ErrForbidden, "operator or admin role required"))
+			return
+		}
+
 		var req struct {
 			Path    string `json:"path"`
-			Type    string `json:"type"` // "file" or "dir"
-			Content string `json:"content"`
+			Type    string `json:"type"`    // "file" or "dir"
+			Content string `json:"content"` // base64-encoded bytes (only for type "file")
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "invalid JSON body"))
@@ -88,16 +99,29 @@ func fileWriteHandler(mgr *fileService.Manager) http.HandlerFunc {
 			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "path is required"))
 			return
 		}
+		if req.Type != "file" && req.Type != "dir" && req.Type != "" {
+			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, `type must be "file" or "dir" (empty defaults to "file")`))
+			return
+		}
 
 		source := r.RemoteAddr
-		switch req.Type {
-		case "dir":
+		if req.Type == "dir" {
 			if err := mgr.Mkdir(r.Context(), req.Path, source); err != nil {
 				writeAppError(w, err)
 				return
 			}
-		default: // "file" or empty
-			if err := mgr.Write(r.Context(), req.Path, []byte(req.Content), source); err != nil {
+		} else {
+			// Decode base64 content; fall back to raw bytes for empty content.
+			var data []byte
+			if req.Content != "" {
+				var err error
+				data, err = base64.StdEncoding.DecodeString(req.Content)
+				if err != nil {
+					writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "content must be base64-encoded"))
+					return
+				}
+			}
+			if err := mgr.Write(r.Context(), req.Path, data, source); err != nil {
 				writeAppError(w, err)
 				return
 			}
@@ -108,11 +132,18 @@ func fileWriteHandler(mgr *fileService.Manager) http.HandlerFunc {
 }
 
 // fileDeleteHandler handles DELETE /api/v1/files
-// Query parameters: path (required), recursive (optional bool)
+// Query parameters: path (required), recursive (optional bool).
+// Requires operator or admin role.
 func fileDeleteHandler(mgr *fileService.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		role := middleware.RoleFromContext(r.Context())
+		if !auth.HasRole(role, auth.RoleOperator) {
+			writeAppError(w, apperrors.New(apperrors.ErrForbidden, "operator or admin role required"))
 			return
 		}
 
@@ -134,11 +165,18 @@ func fileDeleteHandler(mgr *fileService.Manager) http.HandlerFunc {
 }
 
 // fileMoveHandler handles PUT /api/v1/files/move
-// JSON body: {"src":"...","dst":"..."}
+// JSON body: {"src":"...","dst":"..."}.
+// Requires operator or admin role.
 func fileMoveHandler(mgr *fileService.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		role := middleware.RoleFromContext(r.Context())
+		if !auth.HasRole(role, auth.RoleOperator) {
+			writeAppError(w, apperrors.New(apperrors.ErrForbidden, "operator or admin role required"))
 			return
 		}
 
@@ -165,11 +203,18 @@ func fileMoveHandler(mgr *fileService.Manager) http.HandlerFunc {
 }
 
 // fileCopyHandler handles PUT /api/v1/files/copy
-// JSON body: {"src":"...","dst":"..."}
+// JSON body: {"src":"...","dst":"..."}.
+// Requires operator or admin role.
 func fileCopyHandler(mgr *fileService.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		role := middleware.RoleFromContext(r.Context())
+		if !auth.HasRole(role, auth.RoleOperator) {
+			writeAppError(w, apperrors.New(apperrors.ErrForbidden, "operator or admin role required"))
 			return
 		}
 
@@ -196,7 +241,8 @@ func fileCopyHandler(mgr *fileService.Manager) http.HandlerFunc {
 }
 
 // fileReadHandler handles GET /api/v1/files/read
-// Query parameter: path (required)
+// Query parameter: path (required).
+// The response content field is base64-encoded to safely handle binary files.
 func fileReadHandler(mgr *fileService.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -219,8 +265,9 @@ func fileReadHandler(mgr *fileService.Manager) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"path":    path,
-			"content": string(data),
+			"path":     path,
+			"content":  base64.StdEncoding.EncodeToString(data),
+			"encoding": "base64",
 		})
 	}
 }

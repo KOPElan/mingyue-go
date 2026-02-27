@@ -16,7 +16,11 @@ func newShareCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "share",
 		Short: "Network share management commands",
-		Long:  "Commands for querying and managing Samba/NFS network shares.",
+		Long: `Commands for querying and managing Samba/NFS network shares.
+
+NOTE: The current share backend is in-memory only.  Changes (create/update/delete)
+are not persisted to disk and will be lost on process restart.  Real samba/nfs
+configuration file support is planned for a future release.`,
 	}
 	cmd.AddCommand(newShareListCmd())
 	cmd.AddCommand(newShareGetCmd())
