@@ -97,7 +97,7 @@ func testProcs() ([]int32, map[int32]*domain.Process) {
 func buildRouter(collector sysService.Collector, lister procService.ProcessLister) http.Handler {
 	monitor := sysService.NewMonitorWithCollector(collector)
 	procMgr := procService.NewManagerWithLister(lister, nil)
-	return api.NewRouterWithDeps(monitor, procMgr)
+	return api.NewRouterWithDeps(monitor, procMgr, nil, nil)
 }
 
 // addViewerToken registers a viewer-role API key and returns an

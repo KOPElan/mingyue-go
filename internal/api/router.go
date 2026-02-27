@@ -8,6 +8,8 @@ import (
 
 	"kopelan/mingyue-go/internal/api/middleware"
 	"kopelan/mingyue-go/internal/audit"
+	aclService "kopelan/mingyue-go/internal/service/acl"
+	netService "kopelan/mingyue-go/internal/service/network"
 	procService "kopelan/mingyue-go/internal/service/process"
 	sysService "kopelan/mingyue-go/internal/service/system"
 )
@@ -36,16 +38,23 @@ func NewRouter() *Router {
 	monitor := sysService.NewMonitor()
 	auditLogger := audit.NewFileLogger("")
 	procMgr := procService.NewManager(auditLogger)
+	netMgr := netService.NewManager(auditLogger)
+	aclMgr := aclService.NewManager(auditLogger)
 
 	return &Router{
-		Handler:     NewRouterWithDeps(monitor, procMgr),
+		Handler:     NewRouterWithDeps(monitor, procMgr, netMgr, aclMgr),
 		auditLogger: auditLogger,
 	}
 }
 
 // NewRouterWithDeps creates a router with injected dependencies.
 // Exported so that contract tests can inject stubs.
-func NewRouterWithDeps(monitor *sysService.Monitor, procMgr *procService.Manager) http.Handler {
+func NewRouterWithDeps(
+	monitor *sysService.Monitor,
+	procMgr *procService.Manager,
+	netMgr *netService.Manager,
+	aclMgr *aclService.Manager,
+) http.Handler {
 	mux := http.NewServeMux()
 
 	// Health check — intentionally unauthenticated so that load balancers and
@@ -66,6 +75,21 @@ func NewRouterWithDeps(monitor *sysService.Monitor, procMgr *procService.Manager
 
 	// Process individual routes (get + kill share the /processes/{pid} prefix).
 	mux.Handle("/api/v1/processes/", auth(processDispatchHandler(procMgr)))
+
+	// ── Network routes ────────────────────────────────────────────────────
+	// Interfaces list — read-only; any authenticated role.
+	if netMgr != nil {
+		mux.Handle("/api/v1/network/interfaces", auth(networkInterfacesHandler(netMgr)))
+		mux.Handle("/api/v1/network/routes", auth(networkRoutesHandler(netMgr)))
+		// Per-interface state change (PUT) — admin role only; checked inside handler.
+		mux.Handle("/api/v1/network/interfaces/", auth(networkInterfaceDispatchHandler(netMgr)))
+	}
+
+	// ── ACL routes ────────────────────────────────────────────────────────
+	// GET requires viewer+; PUT requires admin (checked inside handler).
+	if aclMgr != nil {
+		mux.Handle("/api/v1/acl", auth(aclDispatchHandler(aclMgr)))
+	}
 
 	return mux
 }
