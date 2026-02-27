@@ -61,6 +61,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -106,6 +108,7 @@ jobs:
   release:
     name: Create Release
     needs: build
+    if: success()
     runs-on: ubuntu-latest
 
     steps:
@@ -132,7 +135,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const tag = context.payload.inputs?.tag || context.ref.replace('refs/tags/', '');
+            const tag = (context.payload.inputs && context.payload.inputs.tag) || context.ref.replace('refs/tags/', '');
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.create({
               owner: context.repo.owner,
