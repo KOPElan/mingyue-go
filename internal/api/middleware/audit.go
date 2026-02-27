@@ -39,14 +39,15 @@ func Audit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 
-		// TODO(phase-2): inject audit.Logger, write AuditEvent after handler
-		// returns (including the outcome and error code when statusCode >= 400).
-		_ = AuditRecord{
-			StartTime:  time.Now(),
-			Method:     r.Method,
-			Path:       r.URL.Path,
-			RemoteAddr: r.RemoteAddr,
-		}
+		// TODO(phase-2): inject audit.Logger, capture the record below, and
+		// write an AuditEvent after next.ServeHTTP returns (including outcome
+		// and error code when statusCode >= 400).
+		// record := AuditRecord{
+		// 	StartTime:  time.Now(),
+		// 	Method:     r.Method,
+		// 	Path:       r.URL.Path,
+		// 	RemoteAddr: r.RemoteAddr,
+		// }
 
 		next.ServeHTTP(rw, r)
 	})
