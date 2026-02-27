@@ -23,16 +23,15 @@ func TestValidate_EmptyToken(t *testing.T) {
 	}
 }
 
-func TestValidate_NonEmptyToken_ReturnsUnauthorized(t *testing.T) {
-	// Phase 1 stub: any non-empty token should still return an error
-	// (real validation is deferred to Phase 2).
+func TestValidate_UnknownToken_ReturnsUnauthorized(t *testing.T) {
+	// Tokens that have not been registered must be rejected.
 	tokens := []string{"sometoken", "Bearer abc123", "eyJhbGciOiJIUzI1NiJ9"}
 
 	for _, tok := range tokens {
 		t.Run(tok, func(t *testing.T) {
 			_, err := auth.Validate(tok)
 			if err == nil {
-				t.Fatal("expected error from Phase-1 stub, got nil")
+				t.Fatal("expected error for unknown token, got nil")
 			}
 			var appErr *apperrors.AppError
 			if !errors.As(err, &appErr) {
@@ -42,6 +41,52 @@ func TestValidate_NonEmptyToken_ReturnsUnauthorized(t *testing.T) {
 				t.Errorf("Code = %q, want %q", appErr.Code, apperrors.ErrUnauthorized)
 			}
 		})
+	}
+}
+
+func TestValidate_RegisteredKey_ReturnsRole(t *testing.T) {
+	auth.RegisterAPIKey("test-viewer-key", auth.Token{Raw: "test-viewer-key", Role: auth.RoleViewer, Subject: "viewer"})
+	auth.RegisterAPIKey("test-admin-key", auth.Token{Raw: "test-admin-key", Role: auth.RoleAdmin, Subject: "admin"})
+
+	tests := []struct {
+		token    string
+		wantRole auth.Role
+	}{
+		{"test-viewer-key", auth.RoleViewer},
+		{"test-admin-key", auth.RoleAdmin},
+	}
+	for _, tc := range tests {
+		role, err := auth.Validate(tc.token)
+		if err != nil {
+			t.Errorf("Validate(%q): unexpected error %v", tc.token, err)
+			continue
+		}
+		if role != tc.wantRole {
+			t.Errorf("Validate(%q): role = %q, want %q", tc.token, role, tc.wantRole)
+		}
+	}
+}
+
+func TestHasRole(t *testing.T) {
+	tests := []struct {
+		role    auth.Role
+		minimum auth.Role
+		want    bool
+	}{
+		{auth.RoleViewer, auth.RoleViewer, true},
+		{auth.RoleOperator, auth.RoleViewer, true},
+		{auth.RoleAdmin, auth.RoleViewer, true},
+		{auth.RoleAdmin, auth.RoleOperator, true},
+		{auth.RoleAdmin, auth.RoleAdmin, true},
+		{auth.RoleViewer, auth.RoleOperator, false},
+		{auth.RoleViewer, auth.RoleAdmin, false},
+		{auth.RoleOperator, auth.RoleAdmin, false},
+	}
+	for _, tc := range tests {
+		got := auth.HasRole(tc.role, tc.minimum)
+		if got != tc.want {
+			t.Errorf("HasRole(%q, %q) = %v, want %v", tc.role, tc.minimum, got, tc.want)
+		}
 	}
 }
 
@@ -77,3 +122,4 @@ func TestToken_Fields(t *testing.T) {
 		t.Errorf("Subject = %q, want user@example.com", tok.Subject)
 	}
 }
+

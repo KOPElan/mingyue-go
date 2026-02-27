@@ -1,0 +1,332 @@
+package api_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"kopelan/mingyue-go/internal/api"
+	"kopelan/mingyue-go/internal/auth"
+	"kopelan/mingyue-go/internal/domain"
+	apperrors "kopelan/mingyue-go/internal/errors"
+	procService "kopelan/mingyue-go/internal/service/process"
+	sysService "kopelan/mingyue-go/internal/service/system"
+
+	"github.com/shirou/gopsutil/v3/mem"
+)
+
+// ─── stubs ───────────────────────────────────────────────────────────────────
+
+// stubSysCollector is a test double for sysService.Collector.
+type stubSysCollector struct {
+	snap  *domain.HostSnapshot
+	err   error
+}
+
+func (s *stubSysCollector) CPUPercent(_ context.Context) (float64, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+	return s.snap.CPUPercent, nil
+}
+
+func (s *stubSysCollector) VirtualMemory(_ context.Context) (*mem.VirtualMemoryStat, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &mem.VirtualMemoryStat{
+		Total:       s.snap.MemTotal,
+		Used:        s.snap.MemUsed,
+		UsedPercent: s.snap.MemPercent,
+	}, nil
+}
+
+func (s *stubSysCollector) Uptime(_ context.Context) (uint64, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+	return s.snap.Uptime, nil
+}
+
+// stubProcessLister is a test double for procService.ProcessLister.
+type stubProcessLister struct {
+	pids    []int32
+	procs   map[int32]*domain.Process
+	pidsErr error
+}
+
+func (s *stubProcessLister) Pids(_ context.Context) ([]int32, error) {
+	return s.pids, s.pidsErr
+}
+
+func (s *stubProcessLister) Info(_ context.Context, pid int32) (*domain.Process, error) {
+	if p, ok := s.procs[pid]; ok {
+		return p, nil
+	}
+	return nil, errors.New("not found")
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+func testSnap() *domain.HostSnapshot {
+	return &domain.HostSnapshot{
+		CPUPercent: 42.0,
+		MemTotal:   8 * 1024 * 1024 * 1024,
+		MemUsed:    4 * 1024 * 1024 * 1024,
+		MemPercent: 50.0,
+		Uptime:     3600,
+	}
+}
+
+func testProcs() ([]int32, map[int32]*domain.Process) {
+	pids := []int32{1, 2, 3}
+	procs := map[int32]*domain.Process{
+		1: {PID: 1, Name: "init"},
+		2: {PID: 2, Name: "kthreadd"},
+		3: {PID: 3, Name: "bash"},
+	}
+	return pids, procs
+}
+
+// buildRouter creates a test router with stub dependencies.
+func buildRouter(collector sysService.Collector, lister procService.ProcessLister) http.Handler {
+	monitor := sysService.NewMonitorWithCollector(collector)
+	procMgr := procService.NewManagerWithLister(lister, nil)
+	return api.NewRouterWithDeps(monitor, procMgr)
+}
+
+// addViewerToken registers a viewer-role API key and returns an
+// Authorization header value.
+func addViewerToken() string {
+	const key = "contract-test-viewer"
+	auth.RegisterAPIKey(key, auth.Token{Raw: key, Role: auth.RoleViewer, Subject: "test-viewer"})
+	return "Bearer " + key
+}
+
+// addOperatorToken registers an operator-role API key.
+func addOperatorToken() string {
+	const key = "contract-test-operator"
+	auth.RegisterAPIKey(key, auth.Token{Raw: key, Role: auth.RoleOperator, Subject: "test-operator"})
+	return "Bearer " + key
+}
+
+// ─── /api/v1/system/overview ─────────────────────────────────────────────────
+
+func TestSystemOverview_Success(t *testing.T) {
+	snap := testSnap()
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: snap}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/system/overview", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var got domain.HostSnapshot
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.CPUPercent != snap.CPUPercent {
+		t.Errorf("CPUPercent: got %v, want %v", got.CPUPercent, snap.CPUPercent)
+	}
+	if got.MemTotal != snap.MemTotal {
+		t.Errorf("MemTotal: got %v, want %v", got.MemTotal, snap.MemTotal)
+	}
+}
+
+func TestSystemOverview_Unauthenticated(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/system/overview", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+	checkAppError(t, w, apperrors.ErrUnauthorized)
+}
+
+func TestSystemOverview_CollectorError(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(
+		&stubSysCollector{err: errors.New("kernel panic")},
+		&stubProcessLister{pids: pids, procs: procs},
+	)
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/system/overview", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrInternal)
+}
+
+// ─── /api/v1/processes ───────────────────────────────────────────────────────
+
+func TestProcessList_Success(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/processes", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		Total     int               `json:"total"`
+		Processes []*domain.Process `json:"processes"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Total != 3 {
+		t.Errorf("Total: got %d, want 3", resp.Total)
+	}
+	if len(resp.Processes) != 3 {
+		t.Errorf("len(Processes): got %d, want 3", len(resp.Processes))
+	}
+}
+
+func TestProcessList_Pagination(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/processes?limit=2&page=1", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp struct {
+		Total     int               `json:"total"`
+		Processes []*domain.Process `json:"processes"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Total != 3 {
+		t.Errorf("Total: got %d, want 3", resp.Total)
+	}
+	if len(resp.Processes) != 2 {
+		t.Errorf("len(Processes): got %d, want 2", len(resp.Processes))
+	}
+}
+
+func TestProcessList_Unauthenticated(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/processes", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestProcessGet_Success(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/processes/1", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var got domain.Process
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.PID != 1 {
+		t.Errorf("PID: got %d, want 1", got.PID)
+	}
+}
+
+func TestProcessGet_NotFound(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/processes/9999", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrNotFound)
+}
+
+func TestProcessKill_Forbidden_ViewerRole(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/processes/1", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrForbidden)
+}
+
+func TestProcessKill_Unauthenticated(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/processes/1", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+// checkAppError verifies that the response body contains an AppError with the
+// expected code.
+func checkAppError(t *testing.T, w *httptest.ResponseRecorder, wantCode apperrors.ErrorCode) {
+	t.Helper()
+	var ae apperrors.AppError
+	if err := json.NewDecoder(w.Body).Decode(&ae); err != nil {
+		t.Fatalf("decode AppError: %v (body: %s)", err, w.Body.String())
+	}
+	if ae.Code != wantCode {
+		t.Errorf("AppError.Code: got %q, want %q", ae.Code, wantCode)
+	}
+}

@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"kopelan/mingyue-go/internal/agent"
+	"kopelan/mingyue-go/internal/api"
 )
 
 func newAgentCmd() *cobra.Command {
@@ -41,10 +42,7 @@ func newAgentStartCmd() *cobra.Command {
 					d.ListenAddr, d.PIDPath)
 			}
 
-			// NewRouter is imported lazily to avoid a circular dependency;
-			// in practice the main package wires this up.  Here we use the
-			// packaged router directly.
-			return d.Start(nil)
+			return d.Start(api.NewRouter())
 		},
 	}
 
