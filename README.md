@@ -74,8 +74,44 @@ go build -o mingyue ./cmd/mingyue
 # 文件列表
 ./mingyue file list /var/log
 
+# 查看文件元信息
+./mingyue file stat /var/log/syslog
+
+# 读取文件内容
+./mingyue file read /var/log/syslog
+
+# 创建目录
+./mingyue file mkdir /tmp/mydir
+
+# 写入文件（--content 指定内容）
+./mingyue file write /tmp/myfile.txt --content "hello"
+
+# 移动文件
+./mingyue file mv /tmp/old.txt /tmp/new.txt
+
+# 复制文件
+./mingyue file cp /tmp/a.txt /tmp/b.txt
+
+# 删除文件（-r 递归删除目录）
+./mingyue file rm /tmp/mydir -r
+
+# 限制文件操作根目录（防止访问根目录以外的路径）
+./mingyue file list /data --root /data
+
 # 共享列表
 ./mingyue share list
+
+# 查看共享详情
+./mingyue share get myshare
+
+# 创建 Samba 共享
+./mingyue share create myshare --type smb --path /srv/myshare
+
+# 更新共享
+./mingyue share update myshare --type smb --path /srv/newpath --read-only
+
+# 删除共享
+./mingyue share delete myshare
 ```
 
 ### 运行（守护进程模式）
@@ -106,6 +142,66 @@ curl -X DELETE -H "Authorization: Bearer <api-key>" http://localhost:7070/api/v1
 
 # 停止守护进程
 ./mingyue agent stop
+```
+
+### 文件管理 API 示例
+
+```sh
+# 列出目录
+curl -H "Authorization: Bearer <api-key>" "http://localhost:7070/api/v1/files?path=/var/log"
+
+# 查询文件元信息
+curl -H "Authorization: Bearer <api-key>" "http://localhost:7070/api/v1/files/stat?path=/var/log/syslog"
+
+# 读取文件内容（响应 content 字段为 base64 编码）
+curl -H "Authorization: Bearer <api-key>" "http://localhost:7070/api/v1/files/read?path=/var/log/syslog"
+
+# 创建文件（需要 operator/admin 角色，content 为 base64 编码）
+curl -X POST -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
+     -d '{"path":"/tmp/hello.txt","type":"file","content":"aGVsbG8="}' \
+     http://localhost:7070/api/v1/files
+
+# 创建目录（需要 operator/admin 角色）
+curl -X POST -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
+     -d '{"path":"/tmp/mydir","type":"dir"}' \
+     http://localhost:7070/api/v1/files
+
+# 移动文件（需要 operator/admin 角色）
+curl -X PUT -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
+     -d '{"src":"/tmp/old.txt","dst":"/tmp/new.txt"}' \
+     http://localhost:7070/api/v1/files/move
+
+# 复制文件（需要 operator/admin 角色）
+curl -X PUT -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
+     -d '{"src":"/tmp/a.txt","dst":"/tmp/b.txt"}' \
+     http://localhost:7070/api/v1/files/copy
+
+# 删除文件（需要 operator/admin 角色；加 recursive=true 递归删除目录）
+curl -X DELETE -H "Authorization: Bearer <api-key>" \
+     "http://localhost:7070/api/v1/files?path=/tmp/mydir&recursive=true"
+```
+
+### 共享管理 API 示例
+
+```sh
+# 列出所有共享（需要 viewer 或以上角色）
+curl -H "Authorization: Bearer <api-key>" http://localhost:7070/api/v1/shares
+
+# 查询指定共享
+curl -H "Authorization: Bearer <api-key>" http://localhost:7070/api/v1/shares/myshare
+
+# 创建共享（需要 operator/admin 角色）
+curl -X POST -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
+     -d '{"name":"myshare","type":"smb","path":"/srv/myshare","enabled":true}' \
+     http://localhost:7070/api/v1/shares
+
+# 更新共享（需要 operator/admin 角色）
+curl -X PUT -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
+     -d '{"type":"smb","path":"/srv/newpath","read_only":true,"enabled":true}' \
+     http://localhost:7070/api/v1/shares/myshare
+
+# 删除共享（需要 operator/admin 角色）
+curl -X DELETE -H "Authorization: Bearer <api-key>" http://localhost:7070/api/v1/shares/myshare
 ```
 
 ### 安装为系统服务
@@ -150,8 +246,8 @@ curl -H "Authorization: Bearer my-secret-key" \
 
 | 角色 | 允许操作 |
 |------|----------|
-| `viewer` | 所有只读操作（系统概览、进程列表/查询等） |
-| `operator` | 只读操作 + 进程终止（`DELETE /processes/{pid}`） |
+| `viewer` | 所有只读操作（系统概览、进程列表/查询、文件列表/stat/read、共享列表/查询等） |
+| `operator` | 只读操作、进程终止、文件写/删/移/复制（POST/DELETE/PUT /files）、共享创建/更新/删除 |
 | `admin` | 全部操作 |
 
 详细 API 契约请参阅 [`specs/001-linux-ops-agent/contracts/api-routes.md`](specs/001-linux-ops-agent/contracts/api-routes.md)。
@@ -307,7 +403,7 @@ go vet ./...
 | **Phase 1** ✅ | 基础骨架：CLI 框架、守护进程框架、HTTP API 基础、统一错误结构、认证鉴权草案、审计日志骨架、CI 基础 | 已完成 |
 | **Phase 2** ✅ | 系统监控 + 进程管理：CPU/内存/磁盘概览、进程列表与终止、CLI/API 对齐、Bearer Token 认证 | 已完成 |
 | **Phase 3** | 磁盘管理：本地挂载/卸载、CIFS/NFS 挂载/卸载、SMART 信息、幂等与审计 | 规划中 |
-| **Phase 4** | 文件管理 + 共享管理：文件操作（路径安全）、Samba/NFS 共享 CRUD、审计日志完善 | 规划中 |
+| **Phase 4** ✅ | 文件管理 + 共享管理：文件操作（路径安全+符号链接防护）、Samba/NFS 共享 CRUD、审计日志完善 | 已完成 |
 | **Phase 5** | 网络管理 + 权限/ACL（P1 迭代） | 待定 |
 | **Phase 6** | OpenAPI 规范 + CI 文档同步 + 安装脚本（`install.sh`）+ README | 待定 |
 
