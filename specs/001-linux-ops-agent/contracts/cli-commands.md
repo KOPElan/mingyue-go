@@ -1,4 +1,4 @@
-# CLI 命令契约（Phase 1–2）
+# CLI 命令契约（Phase 1–3）
 
 本文件定义已实现的 CLI 命令的参数、输出字段与退出码约定，作为 CLI 行为的稳定契约。
 
@@ -262,6 +262,161 @@ mingyue process kill <pid> [--json]
 
 ---
 
+## mingyue disk
+
+磁盘与挂载管理命令组。
+
+### mingyue disk list
+
+列出当前所有挂载点（读取 `/proc/mounts`）。
+
+```sh
+mingyue disk list [--json]
+```
+
+**人类可读输出示例**
+
+```
+MOUNT POINT                    DEVICE                         FS TYPE     OPTIONS
+/                              /dev/sda1                      ext4        rw,relatime
+/mnt/data                      /dev/sdb1                      ext4        rw,relatime
+
+(2 mount(s) found)
+```
+
+**JSON 输出示例**
+
+```json
+{
+  "mounts": [
+    {
+      "device": "/dev/sda1",
+      "mount_point": "/",
+      "fs_type": "ext4",
+      "options": "rw,relatime",
+      "total": 0,
+      "used": 0,
+      "free": 0
+    }
+  ]
+}
+```
+
+**退出码**：`0` 成功；`1` 读取挂载表失败
+
+---
+
+### mingyue disk mount
+
+挂载文件系统。
+
+```sh
+mingyue disk mount --type <fstype> [--read-only] [--options <opts>] \
+  [--username <u>] [--password <p>] [--domain <d>] \
+  <source> <mountpoint> [--json]
+```
+
+| 标志 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--type` | string | `""` | 文件系统类型（`ext4`/`cifs`/`nfs`/`auto`） |
+| `--read-only` | bool | false | 只读挂载 |
+| `--options` | string | `""` | 附加挂载选项（逗号分隔，不含凭据） |
+| `--username` | string | `""` | CIFS 用户名（不记录到日志） |
+| `--password` | string | `""` | CIFS 密码（不记录到日志） |
+| `--domain` | string | `""` | CIFS 域（可选） |
+
+**人类可读输出**：`Mounted /dev/sdb1 at /mnt/data`
+
+**JSON 输出**：
+
+```json
+{
+  "source": "/dev/sdb1",
+  "mount_point": "/mnt/data",
+  "result": "mounted"
+}
+```
+
+**退出码**：`0` 成功；`1` 已挂载（CONFLICT）或挂载失败
+
+> `disk.mount` 操作均产生一条审计日志。
+
+---
+
+### mingyue disk umount
+
+卸载指定挂载点。
+
+```sh
+mingyue disk umount <mountpoint> [--json]
+```
+
+**人类可读输出**：`Unmounted /mnt/data`
+
+**JSON 输出**：
+
+```json
+{
+  "mount_point": "/mnt/data",
+  "result": "unmounted"
+}
+```
+
+**退出码**：`0` 成功；`1` 挂载点未挂载（NOT_FOUND）或卸载失败
+
+> `disk.umount` 操作均产生一条审计日志。
+
+---
+
+### mingyue disk smart
+
+查询块设备 SMART 健康信息（需 root 或 CAP_SYS_RAWIO，依赖 `smartmontools`）。
+
+```sh
+mingyue disk smart <device> [--json]
+```
+
+| 参数 | 说明 |
+|------|------|
+| `device` | 设备路径，如 `/dev/sda` 或简写 `sda` |
+
+**人类可读输出示例**
+
+```
+Device        : /dev/sda
+Model         : Samsung SSD 860 EVO 250GB
+Serial        : S3EVNX0K123456
+Health        : PASSED
+Temperature   : 26°C
+Power-On Hours: 8765 h
+```
+
+**JSON 输出示例**
+
+```json
+{
+  "device": "/dev/sda",
+  "model": "Samsung SSD 860 EVO 250GB",
+  "serial": "S3EVNX0K123456",
+  "health_ok": true,
+  "temperature_c": 26,
+  "power_on_hours": 8765
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `device` | string | 设备路径 |
+| `model` | string | 硬盘型号 |
+| `serial` | string | 序列号 |
+| `health_ok` | bool | SMART 自检是否通过 |
+| `temperature_c` | int | 当前温度（摄氏度） |
+| `power_on_hours` | uint64 | 累计通电时间（小时） |
+
+**退出码**：`0` 成功；`1` smartctl 未安装（NOT_FOUND）、权限不足（FORBIDDEN）或查询失败
+
+---
+
 ## 错误输出格式
 
 所有命令在 `--json` 模式下的错误信息统一写入 **stderr**，格式如下：
@@ -282,8 +437,9 @@ mingyue process kill <pid> [--json]
 
 | 错误码 | 含义 |
 |--------|------|
-| `NOT_FOUND` | 目标资源不存在（进程、文件、挂载点等） |
+| `NOT_FOUND` | 目标资源不存在（进程、文件、挂载点、smartctl 等） |
 | `FORBIDDEN` | 权限不足（缺少所需系统能力或角色） |
 | `UNAUTHORIZED` | 未提供有效认证令牌（API 模式）|
 | `INVALID_INPUT` | 参数格式或值无效 |
+| `CONFLICT` | 目标已存在或状态冲突（如重复挂载）|
 | `INTERNAL` | 内部错误（系统调用失败） |
