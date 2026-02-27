@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  prepare:
+    name: Prepare Tag
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create tag if not exists
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            echo "Tag ${TAG} already exists, skipping creation"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "${TAG}"
+            git push origin "${TAG}"
+            echo "Created and pushed tag ${TAG}"
+          fi
+
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: [prepare]
+    if: always() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Set binary name
+        id: bin
+        run: |
+          NAME=mingyue-${{ matrix.goos }}-${{ matrix.goarch }}
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            NAME="${NAME}.exe"
+          fi
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          LDFLAGS="-s -w \
+            -X kopelan/mingyue-go/internal/cli.BuildVersion=${{ steps.version.outputs.value }} \
+            -X kopelan/mingyue-go/internal/cli.BuildCommit=${{ github.sha }} \
+            -X kopelan/mingyue-go/internal/cli.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            -X kopelan/mingyue-go/internal/api.Version=${{ steps.version.outputs.value }}"
+          go build -trimpath -ldflags="${LDFLAGS}" -o ${{ steps.bin.outputs.name }} ./cmd/mingyue
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bin.outputs.name }}
+          path: ${{ steps.bin.outputs.name }}
+          retention-days: 1
+
+  release:
+    name: Create Release
+    needs: build
+    if: success()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
+
+  notify:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [prepare, build, release]
+    if: failure()
+    steps:
+      - name: Create issue on failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = (context.payload.inputs && context.payload.inputs.tag) || context.ref.replace('refs/tags/', '');
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚨 Release workflow failed: ${tag}`,
+              body: `## Release 工作流失败\n\n- **Tag**: \`${tag}\`\n- **触发方式**: ${context.eventName}\n- **工作流运行**: [查看日志](${runUrl})\n\n请检查工作流日志以了解详细错误信息。`,
+              labels: ['bug'],
+            });
