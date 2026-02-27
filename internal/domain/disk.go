@@ -36,6 +36,6 @@ type BlockDevice struct {
 type DiskPower struct {
 	// Device is the block device path, e.g. "/dev/sda".
 	Device string `json:"device"`
-	// PowerMode is the current power state: "active", "idle", "standby", "sleeping", or "unknown".
+	// PowerMode is the current power state: "active", "standby", "sleeping", or "unknown".
 	PowerMode string `json:"power_mode"`
 }

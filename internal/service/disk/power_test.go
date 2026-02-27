@@ -172,7 +172,8 @@ func TestPowerService_SetMode_Sleep_Success(t *testing.T) {
 }
 
 func TestPowerService_SetMode_InvalidAction_ReturnsErrInvalidInput(t *testing.T) {
-	svc := NewPowerServiceWithCommander(&stubCommander{}, nil)
+	al := &mockAuditLogger{}
+	svc := NewPowerServiceWithCommander(&stubCommander{}, al)
 	err := svc.SetMode(context.Background(), "/dev/sda", "wakeup", "cli")
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -183,6 +184,13 @@ func TestPowerService_SetMode_InvalidAction_ReturnsErrInvalidInput(t *testing.T)
 	}
 	if ae.Code != apperrors.ErrInvalidInput {
 		t.Errorf("expected ErrInvalidInput, got %q", ae.Code)
+	}
+	// Verify failure audit event is recorded for invalid action.
+	if len(al.events) == 0 {
+		t.Fatal("expected failure audit event for invalid action, got none")
+	}
+	if al.events[0].Result != "failure" {
+		t.Errorf("expected audit result %q, got %q", "failure", al.events[0].Result)
 	}
 }
 

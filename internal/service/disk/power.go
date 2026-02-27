@@ -88,6 +88,7 @@ func (s *PowerService) SetMode(ctx context.Context, device, action, source strin
 	case "sleep":
 		flag = "-Y"
 	default:
+		s.logPowerAudit(source, device, action, "failure", apperrors.ErrInvalidInput)
 		return apperrors.New(apperrors.ErrInvalidInput,
 			fmt.Sprintf("unsupported power action %q: use 'standby' or 'sleep'", action))
 	}
