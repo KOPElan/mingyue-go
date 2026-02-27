@@ -8,6 +8,7 @@ import (
 
 	"kopelan/mingyue-go/internal/api/middleware"
 	"kopelan/mingyue-go/internal/audit"
+	diskService "kopelan/mingyue-go/internal/service/disk"
 	procService "kopelan/mingyue-go/internal/service/process"
 	sysService "kopelan/mingyue-go/internal/service/system"
 )
@@ -36,16 +37,23 @@ func NewRouter() *Router {
 	monitor := sysService.NewMonitor()
 	auditLogger := audit.NewFileLogger("")
 	procMgr := procService.NewManager(auditLogger)
+	mountSvc := diskService.NewMountService(auditLogger)
+	smartSvc := diskService.NewSmartService()
 
 	return &Router{
-		Handler:     NewRouterWithDeps(monitor, procMgr),
+		Handler:     NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc),
 		auditLogger: auditLogger,
 	}
 }
 
 // NewRouterWithDeps creates a router with injected dependencies.
 // Exported so that contract tests can inject stubs.
-func NewRouterWithDeps(monitor *sysService.Monitor, procMgr *procService.Manager) http.Handler {
+func NewRouterWithDeps(
+	monitor *sysService.Monitor,
+	procMgr *procService.Manager,
+	mountSvc *diskService.MountService,
+	smartSvc *diskService.SmartService,
+) http.Handler {
 	mux := http.NewServeMux()
 
 	// Health check — intentionally unauthenticated so that load balancers and
@@ -66,6 +74,18 @@ func NewRouterWithDeps(monitor *sysService.Monitor, procMgr *procService.Manager
 
 	// Process individual routes (get + kill share the /processes/{pid} prefix).
 	mux.Handle("/api/v1/processes/", auth(processDispatchHandler(procMgr)))
+
+	// ── Disk / mount routes ───────────────────────────────────────────────
+
+	// Exact: GET (list) + POST (create) on /api/v1/disks/mounts.
+	mux.Handle("/api/v1/disks/mounts", auth(diskMountsHandler(mountSvc)))
+
+	// Subtree: DELETE /api/v1/disks/mounts/{mountpoint} (URL-encoded mountpoint).
+	// More specific than /api/v1/disks/ so it wins for mounts paths.
+	mux.Handle("/api/v1/disks/mounts/", auth(diskMountDeleteHandler(mountSvc)))
+
+	// Subtree: GET /api/v1/disks/{device}/smart (URL-encoded or short device name).
+	mux.Handle("/api/v1/disks/", auth(diskDeviceHandler(smartSvc)))
 
 	return mux
 }
