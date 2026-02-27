@@ -7,14 +7,18 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"kopelan/mingyue-go/internal/api"
 	"kopelan/mingyue-go/internal/auth"
 	"kopelan/mingyue-go/internal/domain"
 	apperrors "kopelan/mingyue-go/internal/errors"
+	fileService "kopelan/mingyue-go/internal/service/file"
 	procService "kopelan/mingyue-go/internal/service/process"
+	shareService "kopelan/mingyue-go/internal/service/share"
 	sysService "kopelan/mingyue-go/internal/service/system"
 
 	"github.com/shirou/gopsutil/v3/mem"
@@ -71,6 +75,70 @@ func (s *stubProcessLister) Info(_ context.Context, pid int32) (*domain.Process,
 	return nil, errors.New("not found")
 }
 
+// stubFS is a minimal no-op FS for tests that don't need file operations.
+type stubFS struct{}
+
+func (stubFS) ReadDir(_ string) ([]os.DirEntry, error)                      { return nil, nil }
+func (stubFS) Stat(path string) (os.FileInfo, error)                         { return nil, os.ErrNotExist }
+func (stubFS) MkdirAll(_ string, _ os.FileMode) error                        { return nil }
+func (stubFS) Remove(_ string) error                                          { return nil }
+func (stubFS) RemoveAll(_ string) error                                       { return nil }
+func (stubFS) Rename(_, _ string) error                                       { return nil }
+func (stubFS) CopyFile(_, _ string) error                                     { return nil }
+func (stubFS) ReadFile(_ string) ([]byte, error)                              { return nil, os.ErrNotExist }
+func (stubFS) WriteFile(_ string, _ []byte, _ os.FileMode) error              { return nil }
+
+// stubShareBackend is a minimal no-op share backend for tests.
+type stubShareBackend struct {
+	shares map[string]domain.Share
+}
+
+func (b *stubShareBackend) List(_ context.Context) ([]domain.Share, error) {
+	result := make([]domain.Share, 0)
+	for _, s := range b.shares {
+		result = append(result, s)
+	}
+	return result, nil
+}
+
+func (b *stubShareBackend) Get(_ context.Context, name string) (*domain.Share, error) {
+	if b.shares != nil {
+		if s, ok := b.shares[name]; ok {
+			cp := s
+			return &cp, nil
+		}
+	}
+	return nil, apperrors.New(apperrors.ErrNotFound, "share not found")
+}
+
+func (b *stubShareBackend) Create(_ context.Context, s domain.Share) error {
+	if b.shares == nil {
+		b.shares = make(map[string]domain.Share)
+	}
+	b.shares[s.Name] = s
+	return nil
+}
+
+func (b *stubShareBackend) Update(_ context.Context, s domain.Share) error {
+	if b.shares == nil || b.shares[s.Name].Name == "" {
+		return apperrors.New(apperrors.ErrNotFound, "share not found")
+	}
+	b.shares[s.Name] = s
+	return nil
+}
+
+func (b *stubShareBackend) Delete(_ context.Context, name string) error {
+	if b.shares != nil {
+		delete(b.shares, name)
+	}
+	return nil
+}
+
+func (b *stubShareBackend) Reload(_ context.Context) error { return nil }
+
+// compile-time check that stubShareBackend implements shareService.Backend.
+var _ shareService.Backend = (*stubShareBackend)(nil)
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 func testSnap() *domain.HostSnapshot {
@@ -97,7 +165,9 @@ func testProcs() ([]int32, map[int32]*domain.Process) {
 func buildRouter(collector sysService.Collector, lister procService.ProcessLister) http.Handler {
 	monitor := sysService.NewMonitorWithCollector(collector)
 	procMgr := procService.NewManagerWithLister(lister, nil)
-	return api.NewRouterWithDeps(monitor, procMgr)
+	fileMgr := fileService.NewManagerWithFS("/", nil, &stubFS{})
+	shareMgr := shareService.NewManagerWithBackend(&stubShareBackend{}, nil)
+	return api.NewRouterWithDeps(monitor, procMgr, fileMgr, shareMgr)
 }
 
 // addViewerToken registers a viewer-role API key and returns an
@@ -359,4 +429,150 @@ func checkAppError(t *testing.T, w *httptest.ResponseRecorder, wantCode apperror
 	if ae.Code != wantCode {
 		t.Errorf("AppError.Code: got %q, want %q", ae.Code, wantCode)
 	}
+}
+
+// ─── /api/v1/files ───────────────────────────────────────────────────────────
+
+func TestFileList_Unauthenticated(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/files?path=/", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestFileList_MissingPath(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/files", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrInvalidInput)
+}
+
+func TestFileWrite_Unauthenticated(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files", strings.NewReader(`{"path":"/x","content":"y"}`))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// ─── /api/v1/shares ──────────────────────────────────────────────────────────
+
+func TestShareList_Success(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/shares", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := resp["shares"]; !ok {
+		t.Error("response missing 'shares' key")
+	}
+}
+
+func TestShareList_Unauthenticated(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/shares", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestShareCreate_Forbidden_ViewerRole(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	body := `{"name":"test","type":"smb","path":"/srv/test"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", strings.NewReader(body))
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrForbidden)
+}
+
+func TestShareCreate_Success_OperatorRole(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addOperatorToken()
+
+	body := `{"name":"myshare","type":"smb","path":"/srv/myshare"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", strings.NewReader(body))
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+}
+
+func TestShareGet_NotFound(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/shares/nonexistent", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrNotFound)
+}
+
+func TestShareDelete_Forbidden_ViewerRole(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/shares/some", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrForbidden)
 }

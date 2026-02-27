@@ -55,6 +55,8 @@ func init() {
 	rootCmd.AddCommand(newAgentCmd())
 	rootCmd.AddCommand(newSystemCmd())
 	rootCmd.AddCommand(newProcessCmd())
+	rootCmd.AddCommand(newFileCmd())
+	rootCmd.AddCommand(newShareCmd())
 }
 
 // IsJSONOutput returns true when the global --json flag is set.

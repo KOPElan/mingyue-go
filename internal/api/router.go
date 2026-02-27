@@ -8,7 +8,9 @@ import (
 
 	"kopelan/mingyue-go/internal/api/middleware"
 	"kopelan/mingyue-go/internal/audit"
+	fileService "kopelan/mingyue-go/internal/service/file"
 	procService "kopelan/mingyue-go/internal/service/process"
+	shareService "kopelan/mingyue-go/internal/service/share"
 	sysService "kopelan/mingyue-go/internal/service/system"
 )
 
@@ -36,16 +38,23 @@ func NewRouter() *Router {
 	monitor := sysService.NewMonitor()
 	auditLogger := audit.NewFileLogger("")
 	procMgr := procService.NewManager(auditLogger)
+	fileMgr := fileService.NewManager("", auditLogger)
+	shareMgr := shareService.NewManager(auditLogger)
 
 	return &Router{
-		Handler:     NewRouterWithDeps(monitor, procMgr),
+		Handler:     NewRouterWithDeps(monitor, procMgr, fileMgr, shareMgr),
 		auditLogger: auditLogger,
 	}
 }
 
 // NewRouterWithDeps creates a router with injected dependencies.
 // Exported so that contract tests can inject stubs.
-func NewRouterWithDeps(monitor *sysService.Monitor, procMgr *procService.Manager) http.Handler {
+func NewRouterWithDeps(
+	monitor *sysService.Monitor,
+	procMgr *procService.Manager,
+	fileMgr *fileService.Manager,
+	shareMgr *shareService.Manager,
+) http.Handler {
 	mux := http.NewServeMux()
 
 	// Health check — intentionally unauthenticated so that load balancers and
@@ -56,18 +65,61 @@ func NewRouterWithDeps(monitor *sysService.Monitor, procMgr *procService.Manager
 	mux.HandleFunc("/api/v1/version", VersionHandler)
 
 	// ── Authenticated routes ──────────────────────────────────────────────
-	auth := middleware.Auth
+	authMw := middleware.Auth
 
 	// System overview — read-only; any authenticated role.
-	mux.Handle("/api/v1/system/overview", auth(systemOverviewHandler(monitor)))
+	mux.Handle("/api/v1/system/overview", authMw(systemOverviewHandler(monitor)))
 
 	// Process list and single-process get — read-only; any authenticated role.
-	mux.Handle("/api/v1/processes", auth(processListHandler(procMgr)))
+	mux.Handle("/api/v1/processes", authMw(processListHandler(procMgr)))
 
 	// Process individual routes (get + kill share the /processes/{pid} prefix).
-	mux.Handle("/api/v1/processes/", auth(processDispatchHandler(procMgr)))
+	mux.Handle("/api/v1/processes/", authMw(processDispatchHandler(procMgr)))
+
+	// ── File management routes ────────────────────────────────────────────
+	mux.Handle("/api/v1/files", authMw(fileRootHandler(fileMgr)))
+	mux.Handle("/api/v1/files/", authMw(fileDispatchHandler(fileMgr)))
+
+	// ── Share management routes ───────────────────────────────────────────
+	mux.Handle("/api/v1/shares", authMw(shareRootHandler(shareMgr)))
+	mux.Handle("/api/v1/shares/", authMw(shareDispatchHandler(shareMgr)))
 
 	return mux
+}
+
+// fileRootHandler dispatches GET (list) and DELETE and POST on /api/v1/files.
+func fileRootHandler(mgr *fileService.Manager) http.Handler {
+	listH := fileListHandler(mgr)
+	writeH := fileWriteHandler(mgr)
+	deleteH := fileDeleteHandler(mgr)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			listH.ServeHTTP(w, r)
+		case http.MethodPost:
+			writeH.ServeHTTP(w, r)
+		case http.MethodDelete:
+			deleteH.ServeHTTP(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+}
+
+// shareRootHandler dispatches GET (list) and POST (create) on /api/v1/shares.
+func shareRootHandler(mgr *shareService.Manager) http.Handler {
+	listH := shareListHandler(mgr)
+	createH := shareCreateHandler(mgr)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			listH.ServeHTTP(w, r)
+		case http.MethodPost:
+			createH.ServeHTTP(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 }
 
 // processDispatchHandler routes requests to the per-PID handlers based on
