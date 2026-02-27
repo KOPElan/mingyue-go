@@ -403,7 +403,8 @@ go vet ./...
 | **Phase 1** ✅ | 基础骨架：CLI 框架、守护进程框架、HTTP API 基础、统一错误结构、认证鉴权草案、审计日志骨架、CI 基础 | 已完成 |
 | **Phase 2** ✅ | 系统监控 + 进程管理：CPU/内存/磁盘概览、进程列表与终止、CLI/API 对齐、Bearer Token 认证 | 已完成 |
 | **Phase 3** | 磁盘管理：本地挂载/卸载、CIFS/NFS 挂载/卸载、SMART 信息、幂等与审计 | 规划中 |
-| **Phase 4** ✅ | 文件管理 + 共享管理：文件操作（路径安全+符号链接防护）、Samba/NFS 共享 CRUD、审计日志完善 | 已完成 |
+| **Phase 4** ✅ | 文件管理 + 共享管理：文件操作（路径安全+符号链接防护）、Samba/NFS 共享 CRUD（内存占位）、审计日志完善 | 已完成 |
+| **Phase 4.x** | 共享管理完善（后续 PR）：① SMB/NFS 服务拆分（`service/samba` + `service/nfs`，真实配置文件落盘）；② SMB 权限字段（`valid_users`/`write_list`/`create_mask`）；③ Samba 用户管理（`smbpasswd` 封装） | 待实现 |
 | **Phase 5** | 网络管理 + 权限/ACL（P1 迭代） | 待定 |
 | **Phase 6** | OpenAPI 规范 + CI 文档同步 + 安装脚本（`install.sh`）+ README | 待定 |
 

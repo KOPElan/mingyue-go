@@ -672,7 +672,11 @@ mingyue file write <path> --content <text> [--root DIR] [--json]
 
 网络共享管理命令组。
 
-> **注意**：当前共享后端为内存存储（placeholder）。`create`/`update`/`delete` 的变更**不会持久化到磁盘**，进程重启后将丢失。真实 Samba/NFS 配置文件支持为后续版本计划。
+> **注意**：当前共享后端为内存存储（placeholder）。`create`/`update`/`delete` 的变更**不会持久化到磁盘**，进程重启后将丢失。以下功能为后续独立 PR 追踪：
+>
+> 1. **SMB/NFS 逻辑拆分**：`samba` 子命令写入 `smb.conf` + `smbd reload`；`nfs` 子命令写入 `/etc/exports` + `exportfs -r`；两套命令独立实现。
+> 2. **SMB 权限配置**：`share create/update` 需支持 `--valid-users`/`--write-list`/`--create-mask` 等 Samba 特有参数。
+> 3. **Samba 用户管理**：新增 `mingyue samba user list|add|set-password|delete` 子命令组，封装 `useradd`/`smbpasswd` 系统调用。
 
 ---
 
