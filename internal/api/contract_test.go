@@ -123,7 +123,7 @@ func testProcs() ([]int32, map[int32]*domain.Process) {
 func buildRouter(collector sysService.Collector, lister procService.ProcessLister) http.Handler {
 	monitor := sysService.NewMonitorWithCollector(collector)
 	procMgr := procService.NewManagerWithLister(lister, nil)
-	mountSvc := diskService.NewMountServiceWithDeps(&stubMountsReader{}, nil, nil)
+	mountSvc := diskService.NewMountServiceWithDeps(&stubMountsReader{}, &stubCommanderNoErr{}, nil)
 	smartSvc := diskService.NewSmartServiceWithCommander(&stubSmartCommander{})
 	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc)
 }

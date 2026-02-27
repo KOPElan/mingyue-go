@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"kopelan/mingyue-go/internal/domain"
 	apperrors "kopelan/mingyue-go/internal/errors"
@@ -29,11 +30,20 @@ func NewSmartServiceWithCommander(c Commander) *SmartService {
 
 // Query retrieves the SMART health information for the given device.
 //
+// device may be a short name like "sda" (auto-expanded to "/dev/sda") or a
+// full path like "/dev/sda".
+//
 // Error semantics:
 //   - ErrNotFound: smartctl binary is not installed (install smartmontools).
 //   - ErrForbidden: insufficient permissions to query the device.
 //   - ErrInternal: all other failures (invalid device, parse errors, etc.).
 func (s *SmartService) Query(ctx context.Context, device string) (*domain.DiskHealth, error) {
+	// Normalize short device names (e.g. "sda" → "/dev/sda") so that CLI
+	// and API callers both work consistently without requiring a leading "/".
+	if !strings.HasPrefix(device, "/") {
+		device = "/dev/" + device
+	}
+
 	output, runErr := s.commander.Run(ctx, "smartctl", "-j", "-a", device)
 
 	// Attempt to parse any output we received, regardless of exit code.

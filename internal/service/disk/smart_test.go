@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sync"
 	"testing"
 
 	apperrors "kopelan/mingyue-go/internal/errors"
@@ -187,5 +188,57 @@ func TestSmartService_Query_ContextTimeout(t *testing.T) {
 	_, err := svc.Query(ctx, "/dev/sda")
 	if err == nil {
 		t.Fatal("expected error for cancelled context, got nil")
+	}
+}
+
+// ─── device normalization tests ───────────────────────────────────────────────
+
+// recordingCommander records the args it was called with.
+type recordingCommander struct {
+	mu       sync.Mutex
+	lastArgs []string
+}
+
+func (c *recordingCommander) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	c.mu.Lock()
+	c.lastArgs = append([]string{name}, args...)
+	c.mu.Unlock()
+	return []byte(sampleSmartJSON), nil
+}
+
+func TestSmartService_Query_ShortDeviceName_NormalizesToDevPrefix(t *testing.T) {
+	rec := &recordingCommander{}
+	svc := NewSmartServiceWithCommander(rec)
+
+	health, err := svc.Query(context.Background(), "sda")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The returned DiskHealth must carry the normalised device path.
+	if health.Device != "/dev/sda" {
+		t.Errorf("Device: got %q, want %q", health.Device, "/dev/sda")
+	}
+	// smartctl must be invoked with the full path.
+	rec.mu.Lock()
+	lastArg := rec.lastArgs[len(rec.lastArgs)-1]
+	rec.mu.Unlock()
+	if lastArg != "/dev/sda" {
+		t.Errorf("smartctl device arg: got %q, want %q", lastArg, "/dev/sda")
+	}
+}
+
+func TestSmartService_Query_FullDevicePath_Unchanged(t *testing.T) {
+	rec := &recordingCommander{}
+	svc := NewSmartServiceWithCommander(rec)
+
+	_, err := svc.Query(context.Background(), "/dev/nvme0n1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rec.mu.Lock()
+	lastArg := rec.lastArgs[len(rec.lastArgs)-1]
+	rec.mu.Unlock()
+	if lastArg != "/dev/nvme0n1" {
+		t.Errorf("smartctl device arg: got %q, want %q", lastArg, "/dev/nvme0n1")
 	}
 }

@@ -84,7 +84,7 @@ func (s *MountService) List(ctx context.Context) ([]domain.Mount, error) {
 		return nil, apperrors.Wrap(apperrors.ErrInternal, "failed to read mount table", err)
 	}
 	defer rc.Close()
-	return parseMounts(rc), nil
+	return parseMounts(rc)
 }
 
 // Mount performs a mount operation using the provided options.
@@ -164,7 +164,7 @@ func (s *MountService) listLocked(ctx context.Context) ([]domain.Mount, error) {
 		return nil, apperrors.Wrap(apperrors.ErrInternal, "failed to read mount table", err)
 	}
 	defer rc.Close()
-	return parseMounts(rc), nil
+	return parseMounts(rc)
 }
 
 // mountGeneric runs mount for non-CIFS filesystems.
@@ -173,7 +173,6 @@ func (s *MountService) mountGeneric(ctx context.Context, opts MountOptions) erro
 	if opts.FSType != "" && !strings.EqualFold(opts.FSType, "auto") {
 		args = append(args, "-t", opts.FSType)
 	}
-	args = append(args, opts.Source, opts.MountPoint)
 
 	mountOpts := opts.Options
 	if opts.ReadOnly {
@@ -186,6 +185,9 @@ func (s *MountService) mountGeneric(ctx context.Context, opts MountOptions) erro
 	if mountOpts != "" {
 		args = append(args, "-o", mountOpts)
 	}
+
+	// source and mountpoint are positional and must come after all options.
+	args = append(args, opts.Source, opts.MountPoint)
 
 	if _, err := s.commander.Run(ctx, "mount", args...); err != nil {
 		return apperrors.Wrap(apperrors.ErrInternal,
@@ -234,7 +236,8 @@ func (s *MountService) mountCIFS(ctx context.Context, opts MountOptions) error {
 		mountOpts += "," + opts.Options
 	}
 
-	args := []string{"-t", "cifs", opts.Source, opts.MountPoint, "-o", mountOpts}
+	// source and mountpoint are positional and must come after all options.
+	args := []string{"-t", "cifs", "-o", mountOpts, opts.Source, opts.MountPoint}
 	if _, err := s.commander.Run(ctx, "mount", args...); err != nil {
 		return apperrors.Wrap(apperrors.ErrInternal,
 			fmt.Sprintf("cifs mount failed for %s at %s", opts.Source, opts.MountPoint), err)
@@ -261,9 +264,12 @@ func (s *MountService) logAudit(source, action, target, result string, code appe
 
 // parseMounts parses /proc/mounts format lines into []domain.Mount.
 // Each line: device mountpoint fstype options dump pass
-func parseMounts(r io.Reader) []domain.Mount {
+// Returns ErrInternal if the scanner encounters a read error (e.g. line too long).
+func parseMounts(r io.Reader) ([]domain.Mount, error) {
 	var mounts []domain.Mount
 	scanner := bufio.NewScanner(r)
+	// Use a 1 MiB buffer to handle uncommon but valid long options strings.
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -280,7 +286,10 @@ func parseMounts(r io.Reader) []domain.Mount {
 			Options:    fields[3],
 		})
 	}
-	return mounts
+	if err := scanner.Err(); err != nil {
+		return nil, apperrors.Wrap(apperrors.ErrInternal, "error reading mount table", err)
+	}
+	return mounts, nil
 }
 
 // ─── production implementations ─────────────────────────────────────────────

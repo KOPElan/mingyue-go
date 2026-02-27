@@ -62,7 +62,10 @@ proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
 // ─── parseMounts ─────────────────────────────────────────────────────────────
 
 func TestParseMounts(t *testing.T) {
-	mounts := parseMounts(strings.NewReader(sampleMounts))
+	mounts, err := parseMounts(strings.NewReader(sampleMounts))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(mounts) != 5 {
 		t.Fatalf("expected 5 mounts, got %d", len(mounts))
 	}
@@ -85,7 +88,10 @@ func TestParseMounts(t *testing.T) {
 }
 
 func TestParseMounts_Empty(t *testing.T) {
-	mounts := parseMounts(strings.NewReader(""))
+	mounts, err := parseMounts(strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(mounts) != 0 {
 		t.Errorf("expected 0 mounts, got %d", len(mounts))
 	}
@@ -93,7 +99,10 @@ func TestParseMounts_Empty(t *testing.T) {
 
 func TestParseMounts_SkipsComments(t *testing.T) {
 	content := "# this is a comment\n/dev/sda1 / ext4 rw 0 0\n"
-	mounts := parseMounts(strings.NewReader(content))
+	mounts, err := parseMounts(strings.NewReader(content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(mounts) != 1 {
 		t.Errorf("expected 1 mount, got %d", len(mounts))
 	}
@@ -209,9 +218,18 @@ func TestMountService_Mount_ReadOnly(t *testing.T) {
 	if len(cmd.calls) == 0 {
 		t.Fatal("expected mount command call")
 	}
-	args := strings.Join(cmd.calls[0], " ")
-	if !strings.Contains(args, "ro") {
-		t.Errorf("expected 'ro' in mount args, got: %s", args)
+	args := cmd.calls[0]
+	argsJoined := strings.Join(args, " ")
+	if !strings.Contains(argsJoined, "ro") {
+		t.Errorf("expected 'ro' in mount args, got: %s", argsJoined)
+	}
+	// -o must appear before source and mountpoint (standard mount syntax).
+	oIdx := sliceIndex(args, "-o")
+	srcIdx := sliceIndex(args, "/dev/sdb1")
+	if oIdx < 0 {
+		t.Error("expected '-o' in mount args")
+	} else if srcIdx >= 0 && oIdx > srcIdx {
+		t.Errorf("'-o' (pos %d) must appear before source (pos %d): %v", oIdx, srcIdx, args)
 	}
 }
 
@@ -233,20 +251,39 @@ func TestMountService_Mount_CIFS_CredentialsNotInArgs(t *testing.T) {
 	if len(cmd.calls) == 0 {
 		t.Fatal("expected mount command call")
 	}
+	args := cmd.calls[0]
 	// None of the command arguments must contain the password.
-	for _, arg := range cmd.calls[0] {
+	for _, arg := range args {
 		if strings.Contains(arg, "secretpassword") {
-			t.Errorf("CIFS password must not appear in command args: %v", cmd.calls[0])
+			t.Errorf("CIFS password must not appear in command args: %v", args)
 		}
 		if strings.Contains(arg, "secretuser") {
-			t.Errorf("CIFS username must not appear in command args: %v", cmd.calls[0])
+			t.Errorf("CIFS username must not appear in command args: %v", args)
 		}
 	}
+	argsJoined := strings.Join(args, " ")
 	// The -o option must reference a credentials file.
-	argsJoined := strings.Join(cmd.calls[0], " ")
 	if !strings.Contains(argsJoined, "credentials=") {
 		t.Errorf("expected 'credentials=' in mount args, got: %s", argsJoined)
 	}
+	// -o must appear before source and mountpoint.
+	oIdx := sliceIndex(args, "-o")
+	srcIdx := sliceIndex(args, "//server/share")
+	if oIdx < 0 {
+		t.Error("expected '-o' in CIFS mount args")
+	} else if srcIdx >= 0 && oIdx > srcIdx {
+		t.Errorf("'-o' (pos %d) must appear before source (pos %d): %v", oIdx, srcIdx, args)
+	}
+}
+
+// sliceIndex returns the index of target in s, or -1 if not found.
+func sliceIndex(s []string, target string) int {
+	for i, v := range s {
+		if v == target {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestMountService_Mount_CommandFails_AuditsFailure(t *testing.T) {
