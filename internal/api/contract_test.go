@@ -125,7 +125,9 @@ func buildRouter(collector sysService.Collector, lister procService.ProcessListe
 	procMgr := procService.NewManagerWithLister(lister, nil)
 	mountSvc := diskService.NewMountServiceWithDeps(&stubMountsReader{}, &stubCommanderNoErr{}, nil)
 	smartSvc := diskService.NewSmartServiceWithCommander(&stubSmartCommander{})
-	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc)
+	powerSvc := diskService.NewPowerServiceWithCommander(&stubCommanderNoErr{}, nil)
+	devSvc := diskService.NewDeviceServiceWithCommander(&stubDeviceCommander{})
+	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc)
 }
 
 // addViewerToken registers a viewer-role API key and returns an
@@ -397,7 +399,9 @@ func buildDiskRouter(reader diskService.MountsReader, smartCmd diskService.Comma
 	procMgr := procService.NewManagerWithLister(&stubProcessLister{pids: pids, procs: procs}, nil)
 	mountSvc := diskService.NewMountServiceWithDeps(reader, &stubCommanderNoErr{}, nil)
 	smartSvc := diskService.NewSmartServiceWithCommander(smartCmd)
-	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc)
+	powerSvc := diskService.NewPowerServiceWithCommander(&stubPowerCommander{}, nil)
+	devSvc := diskService.NewDeviceServiceWithCommander(&stubDeviceCommander{})
+	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc)
 }
 
 // stubCommanderNoErr is a Commander stub that always succeeds.
@@ -405,6 +409,20 @@ type stubCommanderNoErr struct{}
 
 func (c *stubCommanderNoErr) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
 	return nil, nil
+}
+
+// stubDeviceCommander returns an empty lsblk JSON response.
+type stubDeviceCommander struct{}
+
+func (c *stubDeviceCommander) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	return []byte(`{"blockdevices":[]}`), nil
+}
+
+// stubPowerCommander returns a valid hdparm -C active/idle response.
+type stubPowerCommander struct{}
+
+func (c *stubPowerCommander) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	return []byte("/dev/sda:\n drive state is:  active/idle\n"), nil
 }
 
 // ─── /api/v1/disks/mounts (GET) ──────────────────────────────────────────────
@@ -620,4 +638,136 @@ func TestDiskSmart_Unauthenticated(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
 	}
+}
+
+// ─── /api/v1/disks/devices (GET) ─────────────────────────────────────────────
+
+func TestDiskDevicesList_Success(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/disks/devices", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Devices []domain.BlockDevice `json:"devices"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// stubDeviceCommander returns an empty lsblk JSON response.
+	if len(resp.Devices) != 0 {
+		t.Errorf("expected empty devices slice, got %d", len(resp.Devices))
+	}
+}
+
+func TestDiskDevicesList_Unauthenticated(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/disks/devices", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// ─── /api/v1/disks/{device}/power (GET) ──────────────────────────────────────
+
+func TestDiskPowerGet_Success(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/disks/sda/power", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var power domain.DiskPower
+	if err := json.NewDecoder(w.Body).Decode(&power); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if power.PowerMode != "active" {
+		t.Errorf("PowerMode: got %q, want active", power.PowerMode)
+	}
+}
+
+func TestDiskPowerGet_Unauthenticated(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/disks/sda/power", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// ─── /api/v1/disks/{device}/power (POST) ─────────────────────────────────────
+
+func TestDiskPowerSet_Success_OperatorRole(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addOperatorToken()
+
+	body := strings.NewReader(`{"action":"standby"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/disks/sda/power", body)
+	req.Header.Set("Authorization", token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusNoContent, w.Body.String())
+	}
+}
+
+func TestDiskPowerSet_Forbidden_ViewerRole(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addViewerToken()
+
+	body := strings.NewReader(`{"action":"standby"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/disks/sda/power", body)
+	req.Header.Set("Authorization", token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusForbidden)
+	}
+	checkAppError(t, w, apperrors.ErrForbidden)
+}
+
+func TestDiskPowerSet_InvalidAction_BadRequest(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	handler := buildDiskRouter(reader, &stubSmartCommander{})
+	token := addOperatorToken()
+
+	body := strings.NewReader(`{"action":"wakeup"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/disks/sda/power", body)
+	req.Header.Set("Authorization", token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrInvalidInput)
 }

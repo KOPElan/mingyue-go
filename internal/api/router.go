@@ -39,9 +39,11 @@ func NewRouter() *Router {
 	procMgr := procService.NewManager(auditLogger)
 	mountSvc := diskService.NewMountService(auditLogger)
 	smartSvc := diskService.NewSmartService()
+	powerSvc := diskService.NewPowerService(auditLogger)
+	devSvc := diskService.NewDeviceService()
 
 	return &Router{
-		Handler:     NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc),
+		Handler:     NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc),
 		auditLogger: auditLogger,
 	}
 }
@@ -53,6 +55,8 @@ func NewRouterWithDeps(
 	procMgr *procService.Manager,
 	mountSvc *diskService.MountService,
 	smartSvc *diskService.SmartService,
+	powerSvc *diskService.PowerService,
+	devSvc *diskService.DeviceService,
 ) http.Handler {
 	mux := http.NewServeMux()
 
@@ -77,6 +81,9 @@ func NewRouterWithDeps(
 
 	// ── Disk / mount routes ───────────────────────────────────────────────
 
+	// Exact: GET all block devices (including unmounted) via lsblk.
+	mux.Handle("/api/v1/disks/devices", auth(diskDevicesListHandler(devSvc)))
+
 	// Exact: GET (list) + POST (create) on /api/v1/disks/mounts.
 	mux.Handle("/api/v1/disks/mounts", auth(diskMountsHandler(mountSvc)))
 
@@ -84,8 +91,8 @@ func NewRouterWithDeps(
 	// More specific than /api/v1/disks/ so it wins for mounts paths.
 	mux.Handle("/api/v1/disks/mounts/", auth(diskMountDeleteHandler(mountSvc)))
 
-	// Subtree: GET /api/v1/disks/{device}/smart (URL-encoded or short device name).
-	mux.Handle("/api/v1/disks/", auth(diskDeviceHandler(smartSvc)))
+	// Subtree: GET /api/v1/disks/{device}/smart and GET/POST /api/v1/disks/{device}/power.
+	mux.Handle("/api/v1/disks/", auth(diskDeviceHandler(smartSvc, powerSvc)))
 
 	return mux
 }

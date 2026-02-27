@@ -15,12 +15,14 @@ func newDiskCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "disk",
 		Short: "Disk and mount management commands",
-		Long:  "Commands for listing mounts, mounting/unmounting filesystems, and querying SMART health.",
+		Long:  "Commands for listing mounts, mounting/unmounting filesystems, querying SMART health, managing power states, and listing all block devices.",
 	}
 	cmd.AddCommand(newDiskListCmd())
 	cmd.AddCommand(newDiskMountCmd())
 	cmd.AddCommand(newDiskUmountCmd())
 	cmd.AddCommand(newDiskSmartCmd())
+	cmd.AddCommand(newDiskDevicesCmd())
+	cmd.AddCommand(newDiskPowerCmd())
 	return cmd
 }
 
@@ -207,4 +209,121 @@ Examples:
 			return nil
 		},
 	}
+}
+
+// newDiskDevicesCmd returns `mingyue disk devices` — lists all block devices including unmounted ones.
+func newDiskDevicesCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "devices",
+		Short: "List all block devices including unmounted ones",
+		Long: `List all block devices on the system using lsblk, including devices that
+are not currently mounted (e.g. raw disks, unformatted partitions).
+
+Requires the util-linux package (lsblk command).
+
+Examples:
+  mingyue disk devices
+  mingyue disk devices --json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			svc := diskService.NewDeviceService()
+			devices, err := svc.List(ctx)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				return err
+			}
+
+			if IsJSONOutput() {
+				return WriteJSON(map[string]interface{}{"devices": devices})
+			}
+
+			fmt.Printf("%-12s %-8s %-12s %-30s %-25s %s\n",
+				"NAME", "TYPE", "SIZE", "MOUNT POINT", "MODEL", "RM")
+			for _, d := range devices {
+				fmt.Printf("%-12s %-8s %-12s %-30s %-25s %v\n",
+					truncate(d.Name, 12), d.Type, formatBytes(d.SizeBytes),
+					truncate(d.MountPoint, 30), truncate(d.Model, 25), d.Removable)
+			}
+			fmt.Printf("\n(%d device(s) found)\n", len(devices))
+			return nil
+		},
+	}
+}
+
+// newDiskPowerCmd returns `mingyue disk power <device>` — manages disk power state.
+func newDiskPowerCmd() *cobra.Command {
+	var (
+		setStandby bool
+		setSleep   bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "power <device>",
+		Short: "Query or set disk power/sleep state",
+		Long: `Query or set the power state of a block device using hdparm.
+
+Without flags, displays the current power mode of the device.
+Use --standby to spin down the disk to standby mode, or --sleep to force sleep.
+
+Requires the hdparm package and root privileges (or CAP_SYS_RAWIO).
+
+Examples:
+  mingyue disk power /dev/sda           (show current power mode)
+  mingyue disk power sda                (shorthand, assumes /dev/ prefix)
+  mingyue disk power /dev/sda --standby (spin down to standby)
+  mingyue disk power /dev/sda --sleep   (force sleep mode)`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			device := args[0]
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			logger := audit.NewFileLogger("")
+			defer logger.Close()
+			svc := diskService.NewPowerService(logger)
+
+			if setStandby || setSleep {
+				action := "standby"
+				if setSleep {
+					action = "sleep"
+				}
+				if err := svc.SetMode(ctx, device, action, "cli"); err != nil {
+					fmt.Fprintln(os.Stderr, "Error:", err)
+					return err
+				}
+				if IsJSONOutput() {
+					return WriteJSON(map[string]interface{}{
+						"device": device,
+						"action": action,
+						"result": "ok",
+					})
+				}
+				fmt.Printf("Device %s power mode set to %s\n", device, action)
+				return nil
+			}
+
+			// Default: query status.
+			power, err := svc.GetStatus(ctx, device)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				return err
+			}
+
+			if IsJSONOutput() {
+				return WriteJSON(power)
+			}
+
+			fmt.Printf("Device    : %s\n", power.Device)
+			fmt.Printf("Power Mode: %s\n", power.PowerMode)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&setStandby, "standby", false, "spin down the disk to standby mode")
+	cmd.Flags().BoolVar(&setSleep, "sleep", false, "force the disk into sleep mode")
+	cmd.MarkFlagsMutuallyExclusive("standby", "sleep")
+	return cmd
 }

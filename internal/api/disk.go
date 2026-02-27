@@ -8,6 +8,7 @@ import (
 
 	"kopelan/mingyue-go/internal/api/middleware"
 	"kopelan/mingyue-go/internal/auth"
+	"kopelan/mingyue-go/internal/domain"
 	apperrors "kopelan/mingyue-go/internal/errors"
 	diskService "kopelan/mingyue-go/internal/service/disk"
 )
@@ -133,11 +134,38 @@ func diskMountDeleteHandler(mountSvc *diskService.MountService) http.HandlerFunc
 	}
 }
 
+// ─── GET /api/v1/disks/devices ───────────────────────────────────────────────
+
+// diskDevicesListHandler handles GET /api/v1/disks/devices.
+// Lists all block devices, including unmounted ones, using lsblk.
+func diskDevicesListHandler(devSvc *diskService.DeviceService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		devices, err := devSvc.List(r.Context())
+		if err != nil {
+			writeAppError(w, err)
+			return
+		}
+		if devices == nil {
+			devices = []domain.BlockDevice{}
+		}
+		type response struct {
+			Devices []domain.BlockDevice `json:"devices"`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(response{Devices: devices})
+	}
+}
+
 // ─── GET /api/v1/disks/{device}/smart ────────────────────────────────────────
 
 // diskDeviceHandler handles device-specific routes under /api/v1/disks/{device}/...
-// Currently only supports GET /api/v1/disks/{device}/smart.
-func diskDeviceHandler(smartSvc *diskService.SmartService) http.HandlerFunc {
+// Supports GET /api/v1/disks/{device}/smart and GET/POST /api/v1/disks/{device}/power.
+func diskDeviceHandler(smartSvc *diskService.SmartService, powerSvc *diskService.PowerService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		device, action, err := extractDeviceAndAction(r.URL.EscapedPath())
 		if err != nil {
@@ -159,9 +187,77 @@ func diskDeviceHandler(smartSvc *diskService.SmartService) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(health)
+		case "power":
+			diskPowerDispatchHandler(powerSvc, device)(w, r)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
+	}
+}
+
+// ─── GET/POST /api/v1/disks/{device}/power ───────────────────────────────────
+
+// diskPowerDispatchHandler routes GET (status) and POST (set mode) for a device's power endpoint.
+func diskPowerDispatchHandler(powerSvc *diskService.PowerService, device string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			diskPowerGetHandler(powerSvc, device)(w, r)
+		case http.MethodPost:
+			diskPowerSetHandler(powerSvc, device)(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// diskPowerGetHandler handles GET /api/v1/disks/{device}/power.
+// Returns the current power mode of the device using hdparm -C.
+func diskPowerGetHandler(powerSvc *diskService.PowerService, device string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		power, err := powerSvc.GetStatus(r.Context(), device)
+		if err != nil {
+			writeAppError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(power)
+	}
+}
+
+// powerRequest is the JSON body for POST /api/v1/disks/{device}/power.
+type powerRequest struct {
+	// Action is the desired power mode: "standby" or "sleep".
+	Action string `json:"action"`
+}
+
+// diskPowerSetHandler handles POST /api/v1/disks/{device}/power.
+// Requires operator or admin role.
+func diskPowerSetHandler(powerSvc *diskService.PowerService, device string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		role := middleware.RoleFromContext(r.Context())
+		if !auth.HasRole(role, auth.RoleOperator) {
+			writeAppError(w, apperrors.New(apperrors.ErrForbidden, "operator or admin role required"))
+			return
+		}
+
+		var req powerRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "invalid request body"))
+			return
+		}
+		if req.Action == "" {
+			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "action is required (standby or sleep)"))
+			return
+		}
+
+		source := r.RemoteAddr
+		if err := powerSvc.SetMode(r.Context(), device, req.Action, source); err != nil {
+			writeAppError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
