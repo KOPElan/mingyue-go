@@ -142,6 +142,17 @@ func (b *stubShareBackend) Reload(_ context.Context) error { return nil }
 // compile-time check that stubShareBackend implements shareService.Backend.
 var _ shareService.Backend = (*stubShareBackend)(nil)
 
+// stubSambaUserCommander is a no-op SambaUserCommander for tests.
+type stubSambaUserCommander struct{}
+
+func (c *stubSambaUserCommander) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	return nil, nil
+}
+
+func (c *stubSambaUserCommander) RunWithInput(_ context.Context, _ string, _ string, _ ...string) ([]byte, error) {
+	return nil, nil
+}
+
 // stubMountsReader is a test double for diskService.MountsReader.
 type stubMountsReader struct {
 	content string
@@ -196,7 +207,8 @@ func buildRouter(collector sysService.Collector, lister procService.ProcessListe
 	devSvc := diskService.NewDeviceServiceWithCommander(&stubDeviceCommander{})
 	fileMgr := fileService.NewManagerWithFS("/", nil, &stubFS{})
 	shareMgr := shareService.NewManagerWithBackend(&stubShareBackend{}, nil)
-	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr)
+	sambaUserMgr := shareService.NewSambaUserManagerWithCommander(&stubSambaUserCommander{})
+	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr, sambaUserMgr)
 }
 
 // addViewerToken registers a viewer-role API key and returns an
@@ -473,7 +485,8 @@ func buildDiskRouter(reader diskService.MountsReader, smartCmd diskService.Comma
 	devSvc := diskService.NewDeviceServiceWithCommander(&stubDeviceCommander{})
 	fileMgr := fileService.NewManagerWithFS("/", nil, &stubFS{})
 	shareMgr := shareService.NewManagerWithBackend(&stubShareBackend{}, nil)
-	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr)
+	sambaUserMgr := shareService.NewSambaUserManagerWithCommander(&stubSambaUserCommander{})
+	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr, sambaUserMgr)
 }
 
 // stubCommanderNoErr is a Commander stub that always succeeds.
