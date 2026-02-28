@@ -16,7 +16,28 @@ func newShareCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "share",
 		Short: "Network share management commands",
-		Long:  `Commands for querying and managing Samba/NFS network shares.`,
+		Long: `Commands for querying and managing Samba/NFS network shares.
+
+Share configuration is persisted to /var/lib/mingyue/shares.json and
+survives process restarts. Each create/update/delete operation also
+regenerates the relevant service configuration files and signals a reload:
+
+  Samba shares  → /etc/samba/smb.conf.d/mingyue.conf
+                  (reload via: smbcontrol all reload-config)
+  NFS shares    → /etc/exports.d/mingyue.exports
+                  (reload via: exportfs -ra)
+
+Samba config activation (one-time setup):
+  Add the following line to /etc/samba/smb.conf:
+    include = /etc/samba/smb.conf.d/mingyue.conf
+
+NFS config activation (one-time setup):
+  Ensure your kernel NFS server is started and /etc/exports.d/ is included
+  by /etc/exports (most distributions do this by default).
+
+Required permissions:
+  Samba changes : root (or write access to /etc/samba/smb.conf.d/ and smbd running)
+  NFS changes   : root (or write access to /etc/exports.d/ and nfs-kernel-server running)`,
 	}
 	cmd.AddCommand(newShareListCmd())
 	cmd.AddCommand(newShareGetCmd())
@@ -110,7 +131,17 @@ func newShareCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a new network share",
-		Args:  cobra.ExactArgs(1),
+		Long: `Create a new Samba (smb) or NFS (nfs) network share and reload the service.
+
+The share is appended to /var/lib/mingyue/shares.json and the relevant
+service configuration file is regenerated and reloaded immediately.
+
+Example — create a read-write Samba share:
+  mingyue share create myshare --path /srv/myshare --type smb
+
+Example — create a read-only NFS export:
+  mingyue share create nfsdata --path /data/nfs --type nfs --read-only`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -156,7 +187,15 @@ func newShareUpdateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update <name>",
 		Short: "Update an existing network share",
-		Args:  cobra.ExactArgs(1),
+		Long: `Update the configuration of an existing share and reload the service.
+
+The share record is updated in /var/lib/mingyue/shares.json and the
+service configuration file is regenerated and reloaded immediately.
+If the reload fails, the previous configuration is automatically restored.
+
+Disabling a share (--enabled=false) keeps it in the configuration but
+removes it from the active Samba/NFS service until re-enabled.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -199,7 +238,13 @@ func newShareDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <name>",
 		Short: "Delete a network share",
-		Args:  cobra.ExactArgs(1),
+		Long: `Remove a share from the configuration and reload the service.
+
+The share is removed from /var/lib/mingyue/shares.json and the service
+configuration file is regenerated and reloaded immediately.
+If the reload fails, the share is automatically re-added to preserve
+a consistent state.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
