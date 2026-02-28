@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"kopelan/mingyue-go/internal/audit"
 	"kopelan/mingyue-go/internal/domain"
@@ -221,73 +220,4 @@ func (m *Manager) logAudit(source, action, target, result string, code apperrors
 	_ = m.auditLogger.Log(event)
 }
 
-// ── in-memory backend (placeholder; not for production persistence) ──────────
 
-// memBackend is a thread-safe in-memory Backend implementation.
-// It is used in unit tests and as the default production placeholder.
-//
-// NOTE: This backend does not persist to disk and does not invoke any real
-// samba/nfs service reload.  It is a safe placeholder until a real
-// config-file-backed backend is implemented (follow-up task).
-// Changes made through this backend are lost on process restart.
-type memBackend struct {
-	mu     sync.RWMutex
-	shares map[string]domain.Share
-}
-
-func newFileBackend() Backend {
-	return &memBackend{shares: make(map[string]domain.Share)}
-}
-
-func (b *memBackend) List(_ context.Context) ([]domain.Share, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	result := make([]domain.Share, 0, len(b.shares))
-	for _, s := range b.shares {
-		result = append(result, s)
-	}
-	return result, nil
-}
-
-func (b *memBackend) Get(_ context.Context, name string) (*domain.Share, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	s, ok := b.shares[name]
-	if !ok {
-		return nil, apperrors.New(apperrors.ErrNotFound, fmt.Sprintf("share %q not found", name))
-	}
-	cp := s
-	return &cp, nil
-}
-
-func (b *memBackend) Create(_ context.Context, s domain.Share) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if _, exists := b.shares[s.Name]; exists {
-		return apperrors.New(apperrors.ErrInvalidInput, fmt.Sprintf("share %q already exists", s.Name))
-	}
-	b.shares[s.Name] = s
-	return nil
-}
-
-func (b *memBackend) Update(_ context.Context, s domain.Share) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if _, exists := b.shares[s.Name]; !exists {
-		return apperrors.New(apperrors.ErrNotFound, fmt.Sprintf("share %q not found", s.Name))
-	}
-	b.shares[s.Name] = s
-	return nil
-}
-
-func (b *memBackend) Delete(_ context.Context, name string) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if _, exists := b.shares[name]; !exists {
-		return apperrors.New(apperrors.ErrNotFound, fmt.Sprintf("share %q not found", name))
-	}
-	delete(b.shares, name)
-	return nil
-}
-
-func (b *memBackend) Reload(_ context.Context) error { return nil }
