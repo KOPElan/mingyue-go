@@ -11,8 +11,8 @@
 | **磁盘管理** | 本地磁盘 / CIFS / NFS 挂载与卸载、SMART 健康信息 | P0 (v1) |
 | **文件管理** | 目录列表、文件元信息、创建/删除/移动/复制/读写（含路径安全校验） | P0 (v1) |
 | **共享管理** | Samba / NFS 共享的查询、创建、修改、删除 | P0 (v1) |
-| **网络管理** | 网络接口、地址、路由查询与受控变更 | P1 (后续) |
-| **权限/ACL** | 文件/目录权限与 ACL 查询与设置 | P1 (后续) |
+| **网络管理** | 网络接口只读查询（list/get）及受控变更（up/down/dhcp）；变更需 admin 角色 | P1 ✅ |
+| **权限/ACL** | 文件/目录权限与 POSIX ACL 查询（getfacl 优雅降级）与设置（setfacl）；变更需 operator 角色 | P1 ✅ |
 | **OpenAPI 规范** | 所有 API 端点的 OpenAPI v3 规范文件，供平台集成与客户端生成 | P0 (v1) |
 | **审计日志** | 所有变更类操作的结构化审计记录（时间/来源/操作/结果） | P0 (v1) |
 
@@ -112,6 +112,30 @@ go build -o mingyue ./cmd/mingyue
 
 # 删除共享
 ./mingyue share delete myshare
+
+# 查看网络接口列表
+./mingyue network list
+
+# 查看指定接口详情
+./mingyue network get eth0
+
+# 启用网络接口（需要 admin 权限）
+./mingyue network up eth0
+
+# 禁用网络接口（需要 admin 权限）
+./mingyue network down eth0
+
+# 刷新 DHCP 租约（需要 admin 权限）
+./mingyue network dhcp eth0
+
+# 查询文件/目录权限与 ACL
+./mingyue acl get /srv/data
+
+# 设置 POSIX ACL（需要安装 setfacl）
+./mingyue acl set /srv/data --entry u:alice:rwx --entry g:devs:r-x
+
+# 限制 ACL 操作根目录（防止访问根目录以外的路径）
+./mingyue acl get /data/file.txt --root /data
 ```
 
 ### 运行（守护进程模式）
@@ -204,6 +228,43 @@ curl -X PUT -H "Authorization: Bearer <api-key>" -H "Content-Type: application/j
 curl -X DELETE -H "Authorization: Bearer <api-key>" http://localhost:7070/api/v1/shares/myshare
 ```
 
+### 网络管理 API 示例
+
+```sh
+# 列出所有网络接口（需要 viewer 或以上角色）
+curl -H "Authorization: Bearer <api-key>" http://localhost:7070/api/v1/network/interfaces
+
+# 查询单个接口详情
+curl -H "Authorization: Bearer <api-key>" http://localhost:7070/api/v1/network/interfaces/eth0
+
+# 启用接口（需要 admin 角色）
+curl -X PUT -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
+     -d '{"action":"up"}' \
+     http://localhost:7070/api/v1/network/interfaces/eth0
+
+# 禁用接口（需要 admin 角色）
+curl -X PUT -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
+     -d '{"action":"down"}' \
+     http://localhost:7070/api/v1/network/interfaces/eth0
+
+# 刷新 DHCP 租约（需要 admin 角色）
+curl -X PUT -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
+     -d '{"action":"dhcp"}' \
+     http://localhost:7070/api/v1/network/interfaces/eth0
+```
+
+### 权限/ACL 管理 API 示例
+
+```sh
+# 查询文件/目录权限与 POSIX ACL（需要 viewer 或以上角色）
+curl -H "Authorization: Bearer <api-key>" "http://localhost:7070/api/v1/acl?path=/srv/data"
+
+# 设置 POSIX ACL 条目（需要 operator/admin 角色；setfacl 需已安装）
+curl -X PUT -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
+     -d '{"path":"/srv/data","entries":["u:alice:rwx","g:devs:r-x"]}' \
+     http://localhost:7070/api/v1/acl
+```
+
 ### 安装为系统服务
 
 使用提供的安装脚本将 `mingyue` 注册为 systemd 服务，实现开机自启：
@@ -246,9 +307,9 @@ curl -H "Authorization: Bearer my-secret-key" \
 
 | 角色 | 允许操作 |
 |------|----------|
-| `viewer` | 所有只读操作（系统概览、进程列表/查询、文件列表/stat/read、共享列表/查询等） |
-| `operator` | 只读操作、进程终止、文件写/删/移/复制（POST/DELETE/PUT /files）、共享创建/更新/删除 |
-| `admin` | 全部操作 |
+| `viewer` | 所有只读操作（系统概览、进程列表/查询、文件列表/stat/read、共享列表/查询、网络接口查询、ACL 查询等） |
+| `operator` | 只读操作、进程终止、文件写/删/移/复制（POST/DELETE/PUT /files）、共享创建/更新/删除、ACL 设置（PUT /acl） |
+| `admin` | 全部操作（包含网络接口变更：up/down/dhcp） |
 
 详细 API 契约请参阅 [`specs/001-linux-ops-agent/contracts/api-routes.md`](specs/001-linux-ops-agent/contracts/api-routes.md)。
 
@@ -287,23 +348,31 @@ internal/
 │   ├── process.go               # 进程管理端点
 │   ├── disk.go                  # 磁盘与挂载端点
 │   ├── file.go                  # 文件管理端点
-│   └── share.go                 # 共享管理端点
+│   ├── share.go                 # 共享管理端点（兼容旧路由）
+│   ├── smb.go                   # SMB 共享端点
+│   ├── nfs.go                   # NFS 导出端点
+│   ├── network.go               # 网络接口端点
+│   └── acl.go                   # 权限/ACL 端点
 ├── cli/                         # CLI 子命令处理器
 │   ├── root.go                  # 根命令（--json / --config 全局 flag）
 │   ├── system.go                # mingyue system ...
 │   ├── process.go               # mingyue process ...
 │   ├── disk.go                  # mingyue disk ...
 │   ├── file.go                  # mingyue file ...
-│   └── share.go                 # mingyue share ...
+│   ├── smb.go                   # mingyue smb ...
+│   ├── nfs.go                   # mingyue nfs ...
+│   ├── share.go                 # mingyue share ...（已废弃，保留兼容）
+│   ├── network.go               # mingyue network ...
+│   └── acl.go                   # mingyue acl ...
 ├── domain/                      # 领域模型（纯数据结构）
 ├── service/                     # 核心业务逻辑（CLI 与 API 共用同源实现）
 │   ├── system/                  # 系统监控
 │   ├── process/                 # 进程管理
 │   ├── disk/                    # 磁盘与挂载管理
 │   ├── file/                    # 文件管理（含路径安全校验）
-│   ├── share/                   # 共享管理
-│   ├── network/                 # 网络管理（P1 后续）
-│   └── acl/                     # 权限/ACL 管理（P1 后续）
+│   ├── share/                   # 共享管理（Samba/NFS）
+│   ├── network/                 # 网络管理（接口查询与受控变更）
+│   └── acl/                     # 权限/ACL 管理（getfacl/setfacl）
 ├── auth/                        # 认证鉴权（token/API key；viewer/operator/admin 角色）
 ├── audit/                       # 审计日志（结构化写入 /var/log/mingyue/audit.log）
 └── errors/                      # 统一错误结构（错误码 + 人类可读信息）
@@ -392,7 +461,10 @@ go vet ./...
 | CIFS/NFS 挂载/卸载 | 需要 root 或 `CAP_SYS_ADMIN` |
 | SMART 信息读取 | 需要 root 或 `CAP_SYS_RAWIO`，以及 `smartctl` 工具 |
 | 共享管理（Samba/NFS 变更） | 需要 root，以及相应服务可用（`smbd`/`exportfs`） |
-| 网络接口变更 | 需要 `CAP_NET_ADMIN` |
+| 网络接口查询（只读） | 普通用户即可 |
+| 网络接口变更（up/down/dhcp） | 需要 `CAP_NET_ADMIN` 或 root |
+| 文件/目录权限查询（ACL get） | 普通用户即可（文件可读时） |
+| POSIX ACL 设置（ACL set） | 需要文件所有者权限或 root，以及 `setfacl` 工具 |
 
 权限不足时，系统返回可解释的错误信息并提示所需权限，不会静默失败。
 
@@ -404,10 +476,10 @@ go vet ./...
 |------|------|------|
 | **Phase 1** ✅ | 基础骨架：CLI 框架、守护进程框架、HTTP API 基础、统一错误结构、认证鉴权草案、审计日志骨架、CI 基础 | 已完成 |
 | **Phase 2** ✅ | 系统监控 + 进程管理：CPU/内存/磁盘概览、进程列表与终止、CLI/API 对齐、Bearer Token 认证 | 已完成 |
-| **Phase 3** | 磁盘管理：本地挂载/卸载、CIFS/NFS 挂载/卸载、SMART 信息、幂等与审计 | 规划中 |
+| **Phase 3** ✅ | 磁盘管理：本地挂载/卸载、CIFS/NFS 挂载/卸载、SMART 信息、幂等与审计 | 已完成 |
 | **Phase 4** ✅ | 文件管理 + 共享管理：文件操作（路径安全+符号链接防护）、Samba/NFS 共享 CRUD（内存占位）、审计日志完善 | 已完成 |
 | **Phase 4.x** ✅ | 共享管理持久化：JSON 状态文件落盘（`/var/lib/mingyue/shares.json`）、自动生成 Samba 配置片段（`/etc/samba/smb.conf.d/mingyue.conf`）、自动生成 NFS exports 片段（`/etc/exports.d/mingyue.exports`）、服务重载（`smbcontrol all reload-config` / `exportfs -ra`）、进程重启后状态自动恢复 | 已完成 |
-| **Phase 5** | 网络管理 + 权限/ACL（P1 迭代） | 待定 |
+| **Phase 5** ✅ | 网络管理 + 权限/ACL：网络接口只读查询与受控变更（up/down/dhcp）、文件/目录权限与 POSIX ACL 查询（getfacl）与设置（setfacl）、审计日志 | 已完成 |
 | **Phase 6** | OpenAPI 规范 + CI 文档同步 + 安装脚本（`install.sh`）+ README | 待定 |
 
 ## License

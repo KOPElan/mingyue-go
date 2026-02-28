@@ -17,8 +17,10 @@ import (
 	"kopelan/mingyue-go/internal/auth"
 	"kopelan/mingyue-go/internal/domain"
 	apperrors "kopelan/mingyue-go/internal/errors"
+	aclService "kopelan/mingyue-go/internal/service/acl"
 	diskService "kopelan/mingyue-go/internal/service/disk"
 	fileService "kopelan/mingyue-go/internal/service/file"
+	netService "kopelan/mingyue-go/internal/service/network"
 	procService "kopelan/mingyue-go/internal/service/process"
 	shareService "kopelan/mingyue-go/internal/service/share"
 	sysService "kopelan/mingyue-go/internal/service/system"
@@ -208,7 +210,9 @@ func buildRouter(collector sysService.Collector, lister procService.ProcessListe
 	fileMgr := fileService.NewManagerWithFS("/", nil, &stubFS{})
 	shareMgr := shareService.NewManagerWithBackend(&stubShareBackend{}, nil)
 	sambaUserMgr := shareService.NewSambaUserManagerWithCommander(&stubSambaUserCommander{})
-	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr, sambaUserMgr)
+	netMgr := netService.NewManagerWithCommander(&stubCommanderNoErr{}, nil)
+	aclMgr := aclService.NewManagerWithCommander("/", &stubCommanderNoErr{}, nil)
+	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr, sambaUserMgr, netMgr, aclMgr)
 }
 
 // addViewerToken registers a viewer-role API key and returns an
@@ -223,6 +227,13 @@ func addViewerToken() string {
 func addOperatorToken() string {
 	const key = "contract-test-operator"
 	auth.RegisterAPIKey(key, auth.Token{Raw: key, Role: auth.RoleOperator, Subject: "test-operator"})
+	return "Bearer " + key
+}
+
+// addAdminToken registers an admin-role API key.
+func addAdminToken() string {
+	const key = "contract-test-admin"
+	auth.RegisterAPIKey(key, auth.Token{Raw: key, Role: auth.RoleAdmin, Subject: "test-admin"})
 	return "Bearer " + key
 }
 
@@ -486,7 +497,9 @@ func buildDiskRouter(reader diskService.MountsReader, smartCmd diskService.Comma
 	fileMgr := fileService.NewManagerWithFS("/", nil, &stubFS{})
 	shareMgr := shareService.NewManagerWithBackend(&stubShareBackend{}, nil)
 	sambaUserMgr := shareService.NewSambaUserManagerWithCommander(&stubSambaUserCommander{})
-	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr, sambaUserMgr)
+	netMgr := netService.NewManagerWithCommander(&stubCommanderNoErr{}, nil)
+	aclMgr := aclService.NewManagerWithCommander("/", &stubCommanderNoErr{}, nil)
+	return api.NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr, sambaUserMgr, netMgr, aclMgr)
 }
 
 // stubCommanderNoErr is a Commander stub that always succeeds.
@@ -1062,6 +1075,174 @@ func TestFileWrite_InvalidType(t *testing.T) {
 
 	body := `{"path":"/x","type":"ftp","content":""}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/files", strings.NewReader(body))
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrInvalidInput)
+}
+
+// ─── /api/v1/network/interfaces ──────────────────────────────────────────────
+
+func TestNetworkInterfaceList_Success(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/network/interfaces", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := resp["interfaces"]; !ok {
+		t.Error("response missing 'interfaces' key")
+	}
+}
+
+func TestNetworkInterfaceList_Unauthenticated(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/network/interfaces", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestNetworkInterfaceAction_Forbidden_OperatorRole(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addOperatorToken()
+
+	body := `{"action":"up"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/network/interfaces/eth0", strings.NewReader(body))
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// operator role is not sufficient; only admin may mutate interfaces.
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrForbidden)
+}
+
+func TestNetworkInterfaceAction_InvalidAction(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addAdminToken()
+
+	body := `{"action":"reboot"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/network/interfaces/eth0", strings.NewReader(body))
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrInvalidInput)
+}
+
+// ─── /api/v1/acl ─────────────────────────────────────────────────────────────
+
+func TestACLGet_MissingPath(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/acl", nil)
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrInvalidInput)
+}
+
+func TestACLGet_Unauthenticated(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/acl?path=/tmp", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestACLSet_Forbidden_ViewerRole(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addViewerToken()
+
+	body := `{"path":"/tmp/test","entries":["u:alice:rwx"]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/acl", strings.NewReader(body))
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrForbidden)
+}
+
+func TestACLSet_Unauthenticated(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+
+	body := `{"path":"/tmp/test","entries":["u:alice:rwx"]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/acl", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestACLSet_MissingPath(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addOperatorToken()
+
+	body := `{"entries":["u:alice:rwx"]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/acl", strings.NewReader(body))
+	req.Header.Set("Authorization", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	checkAppError(t, w, apperrors.ErrInvalidInput)
+}
+
+func TestACLSet_EmptyEntries(t *testing.T) {
+	pids, procs := testProcs()
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{pids: pids, procs: procs})
+	token := addOperatorToken()
+
+	body := `{"path":"/tmp/test","entries":[]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/acl", strings.NewReader(body))
 	req.Header.Set("Authorization", token)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)

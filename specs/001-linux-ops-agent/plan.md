@@ -303,20 +303,22 @@ tests/
 
 ---
 
-### Phase 5：网络管理 + 权限/ACL（P1 后续优先级）
+### Phase 5：网络管理 + 权限/ACL（P1 后续优先级）✅ 已完成
 
 **目标**：实现 GH-016 / GH-017，满足后续平台对接需求（P1 迭代，v1 范围外）。
 
 **交付物**：
-1. **网络管理**：`internal/service/network/` 提供网络接口/地址/路由只读查询；受控的变更操作（启停接口、刷新 DHCP）需 admin 角色与审计。
-2. **权限/ACL**：`internal/service/acl/` 提供文件/目录权限查询与 ACL 查询/设置，路径安全校验复用 `internal/service/file/` 校验逻辑。
-3. **CLI 命令**：`mingyue network ...`、`mingyue acl ...`
-4. **API 端点**：`GET /api/v1/network/interfaces`、`GET /api/v1/acl?path=...`、`PUT /api/v1/acl?path=...`
+1. **网络管理**：`internal/service/network/` 提供网络接口只读查询（`ListInterfaces`、`GetInterface`）；受控的变更操作（`SetLinkUp`/`SetLinkDown`/`RenewDHCP`）需 admin 角色与审计。
+2. **权限/ACL**：`internal/service/acl/` 提供文件/目录权限查询（`getfacl` 优雅降级）与 ACL 设置（`setfacl`），路径安全校验防目录穿越，变更记录审计日志。
+3. **CLI 命令**：`mingyue network list/get/up/down/dhcp`、`mingyue acl get/set`
+4. **API 端点**：`GET /api/v1/network/interfaces`、`GET /api/v1/network/interfaces/{name}`、`PUT /api/v1/network/interfaces/{name}`、`GET /api/v1/acl?path=...`、`PUT /api/v1/acl`
+5. **契约测试**：9 个新增契约测试（认证/鉴权/参数校验）；`buildRouter` 签名更新。
 
-**DoD**：
-- 网络变更操作需 admin 角色；只读查询支持 viewer 角色。
-- ACL 设置需路径安全校验，变更记录审计日志。
-- 单元测试与契约测试完整覆盖。
+**DoD**（已验证）：
+- ✅ 网络变更操作需 admin 角色（operator/viewer 返回 403）；只读查询支持 viewer 角色。
+- ✅ ACL 设置需 operator/admin 角色且路径安全校验，变更记录审计日志。
+- ✅ 单元测试：`internal/service/network/` 8 个，`internal/service/acl/` 8 个，`go test ./...` 全部通过。
+- ✅ 契约测试全量通过；CodeQL 扫描 0 告警。
 
 **关键 FR 对应**：FR-003（扩展网络信息）、FR-013、FR-015
 
