@@ -12,8 +12,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -82,8 +84,9 @@ func (m *Manager) Get(ctx context.Context, path string) (*domain.ACLInfo, error)
 	}
 
 	entry := &domain.ACLInfo{
-		Path: abs,
-		Mode: info.Mode().String(),
+		Path:       abs,
+		Mode:       info.Mode().String(),
+		ACLEntries: []domain.ACLPermission{},
 	}
 
 	if sys, ok := info.Sys().(*syscall.Stat_t); ok {
@@ -172,35 +175,64 @@ func (m *Manager) safePath(path string) (string, error) {
 
 // parseGetfaclOutput parses the output of `getfacl --absolute-names --omit-header`.
 // Each non-comment line is in the form "type:qualifier:perms" (e.g. "user::rwx").
+// The "default:" prefix common in default ACL entries is stripped before parsing.
+// Inline comments (e.g. "\t#effective:r-x") are truncated from the permissions field.
+// Only standard types (user/group/mask/other) and three-character permission strings are kept.
 func parseGetfaclOutput(out []byte) []domain.ACLPermission {
-	var entries []domain.ACLPermission
+	entries := []domain.ACLPermission{}
 	scanner := bufio.NewScanner(bytes.NewReader(out))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+
+		// Strip optional "default:" prefix (e.g. "default:user::rwx").
+		if strings.HasPrefix(line, "default:") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "default:"))
+			if line == "" {
+				continue
+			}
+		}
+
 		parts := strings.SplitN(line, ":", 3)
 		if len(parts) != 3 {
 			continue
 		}
-		entry := domain.ACLPermission{
-			Type:        parts[0],
-			Qualifier:   parts[1],
-			Permissions: parts[2],
+
+		typ := strings.TrimSpace(parts[0])
+		qualifier := strings.TrimSpace(parts[1])
+
+		// Truncate trailing whitespace and inline comment suffix from permissions
+		// (e.g. "rwx\t#effective:r-x" → "rwx").
+		permsField := strings.TrimSpace(parts[2])
+		if idx := strings.IndexAny(permsField, " \t#"); idx >= 0 {
+			permsField = permsField[:idx]
 		}
-		entries = append(entries, entry)
+		perms := strings.TrimSpace(permsField)
+
+		// Accept only standard ACL types and exactly three-character permission strings.
+		switch typ {
+		case "user", "group", "mask", "other":
+		default:
+			continue
+		}
+		if len(perms) != 3 {
+			continue
+		}
+
+		entries = append(entries, domain.ACLPermission{
+			Type:        typ,
+			Qualifier:   qualifier,
+			Permissions: perms,
+		})
 	}
 	return entries
 }
 
-// isNotFound returns true when the error looks like an "executable not found" error.
+// isNotFound returns true when the error indicates an executable was not found in PATH.
 func isNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not found") || strings.Contains(msg, "no such file")
+	return errors.Is(err, exec.ErrNotFound)
 }
 
 func (m *Manager) logAudit(source, action, target, result string, code apperrors.ErrorCode) {

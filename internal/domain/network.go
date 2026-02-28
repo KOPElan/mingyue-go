@@ -10,8 +10,8 @@ type NetworkInterface struct {
 	Flags []string `json:"flags"`
 	// MTU is the maximum transmission unit in bytes.
 	MTU int `json:"mtu"`
-	// HardwareAddr is the MAC address string, empty for loopback/virtual interfaces.
-	HardwareAddr string `json:"hardware_addr,omitempty"`
+	// HardwareAddr is the MAC address string, empty string for loopback/virtual interfaces.
+	HardwareAddr string `json:"hardware_addr"`
 	// Addresses is the list of unicast addresses assigned to this interface.
 	Addresses []NetworkAddress `json:"addresses"`
 }

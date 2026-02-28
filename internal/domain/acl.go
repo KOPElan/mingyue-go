@@ -12,16 +12,16 @@ type ACLInfo struct {
 	Mode string `json:"mode"`
 	// ACLEntries contains extended POSIX ACL entries when the filesystem
 	// supports ACLs and entries exist beyond the base permissions.
-	// Empty when no extended ACL is present.
-	ACLEntries []ACLPermission `json:"acl_entries,omitempty"`
+	// Empty (not null) when no extended ACL is present or getfacl is unavailable.
+	ACLEntries []ACLPermission `json:"acl_entries"`
 }
 
 // ACLPermission represents a single POSIX ACL entry.
 type ACLPermission struct {
 	// Type is "user", "group", "mask", or "other".
 	Type string `json:"type"`
-	// Qualifier is the username or group name; empty for the owning user/group.
-	Qualifier string `json:"qualifier,omitempty"`
+	// Qualifier is the username or group name; empty string for the owning user/group.
+	Qualifier string `json:"qualifier"`
 	// Permissions is a three-character string such as "rwx", "r--", or "---".
 	Permissions string `json:"permissions"`
 }

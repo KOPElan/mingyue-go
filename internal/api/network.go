@@ -35,16 +35,21 @@ func networkInterfacesHandler(mgr *netService.Manager) http.HandlerFunc {
 }
 
 // networkInterfaceDispatchHandler routes /api/v1/network/interfaces/{name} requests.
-// GET returns a single interface; PUT performs a mutating action (up/down/dhcp)
-// and requires admin role.
+// GET returns a single interface; PUT performs a mutating action (up/down/dhcp, specified
+// in the JSON body) and requires admin role.
 func networkInterfaceDispatchHandler(mgr *netService.Manager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Strip prefix to extract "{name}" or "{name}/{action}".
+		// Strip prefix to extract "{name}". Reject unexpected sub-paths.
 		sub := strings.TrimPrefix(r.URL.Path, "/api/v1/network/interfaces/")
 		parts := strings.SplitN(sub, "/", 2)
 		name := parts[0]
 		if name == "" {
 			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "interface name is required"))
+			return
+		}
+		// Reject unexpected sub-paths (e.g. /interfaces/eth0/extra).
+		if len(parts) > 1 && parts[1] != "" {
+			http.NotFound(w, r)
 			return
 		}
 

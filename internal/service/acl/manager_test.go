@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	execpkg "os/exec"
 	"os"
 	"path/filepath"
 	"testing"
@@ -132,9 +133,24 @@ func TestSetACL_CommandError(t *testing.T) {
 		t.Fatalf("create test file: %v", err)
 	}
 
-	mgr := acl.NewManagerWithCommander(dir, &stubErrCommander{err: errors.New("setfacl: not found")}, nil)
+	mgr := acl.NewManagerWithCommander(dir, &stubErrCommander{err: errors.New("setfacl: exit status 1")}, nil)
 	err := mgr.SetACL(context.Background(), f, []string{"u:alice:rwx"}, "test")
 	if err == nil {
 		t.Fatal("expected error when setfacl fails")
+	}
+}
+
+func TestSetACL_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(f, []byte("data"), 0o644); err != nil {
+		t.Fatalf("create test file: %v", err)
+	}
+
+	setfaclNotFoundErr := &execpkg.Error{Name: "setfacl", Err: execpkg.ErrNotFound}
+	mgr := acl.NewManagerWithCommander(dir, &stubErrCommander{err: setfaclNotFoundErr}, nil)
+	err := mgr.SetACL(context.Background(), f, []string{"u:alice:rwx"}, "test")
+	if err == nil {
+		t.Fatal("expected error when setfacl is not installed")
 	}
 }
