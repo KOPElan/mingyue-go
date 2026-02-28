@@ -1,0 +1,86 @@
+name: OpenAPI Sync Check
+
+on:
+  pull_request:
+    branches: ["**"]
+  push:
+    branches: ["**"]
+
+jobs:
+  openapi-lint:
+    name: Validate OpenAPI Spec
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Redocly CLI
+        run: npm install -g @redocly/cli@1.18.0
+
+      - name: Lint OpenAPI spec
+        run: redocly lint docs/api/openapi.yaml
+
+  openapi-coverage:
+    name: Check OpenAPI Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify OpenAPI file exists
+        run: |
+          if [ ! -f docs/api/openapi.yaml ]; then
+            echo "ERROR: docs/api/openapi.yaml is missing."
+            echo "Please generate or update the OpenAPI spec before merging."
+            exit 1
+          fi
+          echo "docs/api/openapi.yaml found."
+
+      - name: Check key endpoints are documented
+        run: |
+          python3 - <<'PYEOF'
+          import sys
+          import yaml
+
+          REQUIRED_PATHS = [
+            "/api/v1/health",
+            "/api/v1/version",
+            "/api/v1/system/overview",
+            "/api/v1/processes",
+            "/api/v1/files",
+            "/api/v1/shares",
+            "/api/v1/smb/shares",
+            "/api/v1/nfs/exports",
+            "/api/v1/disks/mounts",
+            "/api/v1/disks/devices",
+            "/api/v1/network/interfaces",
+            "/api/v1/acl",
+          ]
+
+          with open("docs/api/openapi.yaml") as f:
+            spec = yaml.safe_load(f)
+
+          documented = set(spec.get("paths", {}).keys())
+          missing = [p for p in REQUIRED_PATHS if p not in documented]
+
+          if missing:
+            print("ERROR: The following required API paths are missing from docs/api/openapi.yaml:")
+            for m in missing:
+              print(f"  - {m}")
+            print()
+            print("Please update docs/api/openapi.yaml to document all API endpoints.")
+            sys.exit(1)
+
+          print(f"All {len(REQUIRED_PATHS)} required API paths are documented in docs/api/openapi.yaml.")
+          PYEOF

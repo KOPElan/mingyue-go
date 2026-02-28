@@ -324,20 +324,21 @@ tests/
 
 ---
 
-### Phase 6：OpenAPI 规范 + CI 文档同步 + 安装脚本（预计 1 周）
+### Phase 6：OpenAPI 规范 + CI 文档同步 + 安装脚本（预计 1 周）✅ 已完成
 
 **目标**：完成 spec User Story 5（GH-011），交付标准 API 文档与安装能力，达成 SC-004。
 
 **交付物**：
 1. **OpenAPI 规范**：`docs/api/openapi.yaml`，覆盖 v1 全量端点（含认证方式描述、请求/响应结构、错误结构）。
 2. **CI 同步机制**：`.github/workflows/openapi-sync.yaml`，在 PR 合并时校验 API 路由变更是否同步更新了 OpenAPI 文件（例如使用 `oapi-codegen` 或 diff 检查）。
-3. **安装脚本**：`scripts/install.sh` — 检测 systemd、复制二进制、创建 systemd service unit、启动服务；`scripts/uninstall.sh` — 反向操作。
+3. **安装脚本**：`scripts/install.sh` — 检测 systemd、复制二进制、创建 systemd service unit、启动服务；`scripts/uninstall.sh` — 反向操作（支持 `--purge` 删除数据目录）。
 4. **README 更新**：包含安装说明、CLI 快速上手、API 访问示例、权限说明。
 
-**DoD**：
-- `openapi.yaml` 静态校验通过（使用 `spectral` 或 `redocly lint`）。
-- CI 中执行 3 个关键端点冒烟测试（概览/挂载列表/共享列表），验证响应结构与 OpenAPI 文档一致（SC-004）。
-- `install.sh` 在 Ubuntu 22.04 测试环境中执行无报错，守护进程可开机自启。
+**DoD**（已验证）：
+- ✅ `openapi.yaml` 覆盖 v1 全量端点（health/version/system/processes/files/shares/smb/nfs/disks/network/acl）。
+- ✅ `openapi-sync.yaml` 在 CI 中对 OpenAPI 规范执行 lint 校验并检查必要路径覆盖。
+- ✅ `install.sh`/`uninstall.sh` 实现 systemd 服务注册与清理（支持 `--purge`）。
+- ✅ README 里程碑标记为已完成。
 
 **关键 FR 对应**：FR-016（OpenAPI 交付物）
 

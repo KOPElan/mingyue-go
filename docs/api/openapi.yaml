@@ -1,0 +1,1830 @@
+openapi: "3.0.3"
+info:
+  title: mingyue Linux Operations Agent API
+  description: |
+    RESTful HTTP+JSON API for the mingyue Linux operations agent.
+    All endpoints are mounted under `/api/v1`.
+
+    **Authentication**: All endpoints except `/api/v1/health` and `/api/v1/version`
+    require a Bearer Token in the `Authorization` header.
+
+    **Role hierarchy** (lowest to highest): `viewer` → `operator` → `admin`
+    - `viewer`: all read-only operations
+    - `operator`: read-only + destructive operations (kill, mount/umount, file write/delete/move/copy, share CRUD, ACL set)
+    - `admin`: all operations including network interface changes
+  version: "1.0.0"
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:7070
+    description: Default local daemon
+
+tags:
+  - name: Health
+    description: Liveness and version probes (no authentication required)
+  - name: System
+    description: Host resource overview
+  - name: Processes
+    description: Process list, query, and termination
+  - name: Files
+    description: File and directory management (list, stat, read, write, delete, move, copy)
+  - name: Shares
+    description: Generic share management (Samba + NFS, legacy routes)
+  - name: SMB
+    description: Samba share management and user management
+  - name: NFS
+    description: NFS export management
+  - name: Disks
+    description: Block device list, mount/umount management, SMART health, and power management
+  - name: Network
+    description: Network interface query and controlled changes
+  - name: ACL
+    description: POSIX ACL query and modification
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Bearer token 对应的 API key 需要在 daemon 启动代码中通过
+        `auth.RegisterAPIKey()` 在进程内显式注册。当前默认启动路径不会自动加载或注册
+        任何 key，未注册时所有受保护接口将返回 401。
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [NOT_FOUND, UNAUTHORIZED, FORBIDDEN, INVALID_INPUT, INTERNAL, CONFLICT]
+          description: Machine-readable error category
+          example: NOT_FOUND
+        message:
+          type: string
+          description: Human-readable error description
+          example: "process 9999 not found"
+
+    HealthResponse:
+      type: object
+      required: [status, version, go_os, go_arch]
+      properties:
+        status:
+          type: string
+          example: ok
+        version:
+          type: string
+          example: "v1.0.0"
+        go_os:
+          type: string
+          example: linux
+        go_arch:
+          type: string
+          example: amd64
+
+    VersionResponse:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: string
+          example: "v1.0.0"
+
+    HostSnapshot:
+      type: object
+      required: [timestamp, cpu_percent, mem_total, mem_used, mem_percent, uptime]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: UTC time when the snapshot was collected
+        cpu_percent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          description: CPU usage percentage
+        mem_total:
+          type: integer
+          format: int64
+          description: Total physical memory in bytes
+        mem_used:
+          type: integer
+          format: int64
+          description: Used physical memory in bytes
+        mem_percent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          description: Memory usage percentage
+        uptime:
+          type: integer
+          format: int64
+          description: System uptime in seconds
+
+    Process:
+      type: object
+      required: [pid, name, status, cpu_percent, mem_rss, user, cmdline]
+      properties:
+        pid:
+          type: integer
+          format: int32
+          description: Process identifier
+        name:
+          type: string
+          description: Process name
+        status:
+          type: string
+          description: "One-letter process status (R/S/Z/…)"
+        cpu_percent:
+          type: number
+          format: double
+          description: CPU usage percentage
+        mem_rss:
+          type: integer
+          format: int64
+          description: Resident set size in bytes
+        user:
+          type: string
+          description: Owning user name
+        cmdline:
+          type: string
+          description: Full command line
+
+    ProcessListResponse:
+      type: object
+      required: [total, processes]
+      properties:
+        total:
+          type: integer
+          description: Total number of matching processes
+        processes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Process"
+
+    FileEntry:
+      type: object
+      required: [name, path, is_dir, size, mode, mod_time, owner]
+      properties:
+        name:
+          type: string
+          description: Base name of the file
+        path:
+          type: string
+          description: Absolute path
+        is_dir:
+          type: boolean
+          description: Whether the entry is a directory
+        size:
+          type: integer
+          format: int64
+          description: File size in bytes (0 for directories)
+        mode:
+          type: string
+          description: "File permission string, e.g. \"-rwxr-xr-x\""
+        mod_time:
+          type: string
+          format: date-time
+          description: Last modification time
+        owner:
+          type: string
+          description: Owning user name
+        unreadable:
+          type: boolean
+          description: True when the entry's metadata could not be retrieved
+
+    FileListResponse:
+      type: object
+      required: [path, entries]
+      properties:
+        path:
+          type: string
+          description: The queried directory path
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileEntry"
+
+    FileReadResponse:
+      type: object
+      required: [path, content, encoding]
+      properties:
+        path:
+          type: string
+          description: The queried file path
+        content:
+          type: string
+          description: File content, base64-encoded
+        encoding:
+          type: string
+          enum: [base64]
+
+    FileWriteRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: Absolute path of the file or directory to create
+        type:
+          type: string
+          enum: [file, dir]
+          default: file
+          description: Entry type; defaults to "file"
+        content:
+          type: string
+          description: Base64-encoded file content (only for type "file")
+
+    FileMoveOrCopyRequest:
+      type: object
+      required: [src, dst]
+      properties:
+        src:
+          type: string
+          description: Source absolute path
+        dst:
+          type: string
+          description: Destination absolute path
+
+    Share:
+      type: object
+      required: [name, type, path, read_only, enabled]
+      properties:
+        name:
+          type: string
+          description: Share name as seen by remote clients
+        type:
+          type: string
+          enum: [smb, nfs]
+          description: Share protocol
+        path:
+          type: string
+          description: Local directory being shared
+        comment:
+          type: string
+          description: Optional human-readable description
+        read_only:
+          type: boolean
+          description: Whether the share is exported read-only
+        enabled:
+          type: boolean
+          description: Whether the share is currently active
+        valid_users:
+          type: string
+          description: "Samba: space/comma-separated list of users or @groups allowed to connect"
+        write_list:
+          type: string
+          description: "Samba: users/groups granted write access even when read-only"
+        create_mask:
+          type: string
+          description: "Samba: octal permission mask for new files, e.g. \"0644\""
+        directory_mask:
+          type: string
+          description: "Samba: octal permission mask for new directories, e.g. \"0755\""
+        hosts:
+          type: string
+          description: "NFS: space-separated allowed hosts/CIDRs (default: \"*\")"
+
+    ShareListResponse:
+      type: object
+      required: [shares]
+      properties:
+        shares:
+          type: array
+          items:
+            $ref: "#/components/schemas/Share"
+
+    SambaUser:
+      type: object
+      required: [username]
+      properties:
+        username:
+          type: string
+          description: Samba username
+
+    SambaUserListResponse:
+      type: object
+      required: [users]
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/SambaUser"
+
+    SambaUserAddRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+
+    SambaUserSetPasswordRequest:
+      type: object
+      required: [password]
+      properties:
+        password:
+          type: string
+          format: password
+
+    Mount:
+      type: object
+      required: [device, mount_point, fs_type, options, total, used, free]
+      properties:
+        device:
+          type: string
+          description: "Block device or network path, e.g. \"/dev/sda1\" or \"//server/share\""
+        mount_point:
+          type: string
+          description: Directory where the filesystem is mounted
+        fs_type:
+          type: string
+          description: "Filesystem type, e.g. \"ext4\", \"cifs\", \"nfs\""
+        options:
+          type: string
+          description: Mount options string
+        total:
+          type: integer
+          format: int64
+          description: Total filesystem size in bytes
+        used:
+          type: integer
+          format: int64
+          description: Used size in bytes
+        free:
+          type: integer
+          format: int64
+          description: Free size in bytes
+
+    MountListResponse:
+      type: object
+      required: [mounts]
+      properties:
+        mounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Mount"
+
+    MountRequest:
+      type: object
+      required: [source, mount_point]
+      properties:
+        source:
+          type: string
+          description: "Device or network path to mount"
+        mount_point:
+          type: string
+          description: Target mount point (must exist or be created in advance)
+        fs_type:
+          type: string
+          description: Filesystem type (auto-detected when empty for local mounts)
+        read_only:
+          type: boolean
+          default: false
+        options:
+          type: string
+          description: Additional mount options
+        username:
+          type: string
+          description: "CIFS: username (never echoed back)"
+        password:
+          type: string
+          format: password
+          description: "CIFS: password (never echoed back or logged)"
+        domain:
+          type: string
+          description: "CIFS: domain"
+
+    BlockDevice:
+      type: object
+      required: [name, size_bytes, type, removable]
+      properties:
+        name:
+          type: string
+          description: "Short device name, e.g. \"sda\" or \"sda1\""
+        size_bytes:
+          type: integer
+          format: int64
+          description: Device size in bytes (0 if unknown)
+        type:
+          type: string
+          description: "Device type: \"disk\", \"part\", \"rom\", \"loop\""
+        mount_point:
+          type: string
+          description: Current mount point, empty if unmounted
+        model:
+          type: string
+          description: Device model string
+        removable:
+          type: boolean
+          description: True for removable devices such as USB drives
+
+    BlockDeviceListResponse:
+      type: object
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/BlockDevice"
+
+    DiskHealth:
+      type: object
+      required: [device, model, serial, health_ok, temperature_c, power_on_hours]
+      properties:
+        device:
+          type: string
+          description: "Block device path, e.g. \"/dev/sda\""
+        model:
+          type: string
+          description: Drive model string
+        serial:
+          type: string
+          description: Drive serial number
+        health_ok:
+          type: boolean
+          description: True when the overall SMART assessment is "PASSED"
+        temperature_c:
+          type: integer
+          description: Current drive temperature in Celsius
+        power_on_hours:
+          type: integer
+          format: int64
+          description: Accumulated power-on time in hours
+
+    DiskPower:
+      type: object
+      required: [device, power_mode]
+      properties:
+        device:
+          type: string
+          description: "Block device path, e.g. \"/dev/sda\""
+        power_mode:
+          type: string
+          enum: [active, standby, sleeping, unknown]
+          description: Current power state
+
+    DiskPowerRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [standby, sleep]
+          description: Desired power mode
+
+    NetworkAddress:
+      type: object
+      required: [ip, prefix, family]
+      properties:
+        ip:
+          type: string
+          description: IP address string (IPv4 or IPv6)
+        prefix:
+          type: integer
+          description: Prefix length (CIDR notation)
+        family:
+          type: string
+          enum: [ipv4, ipv6]
+
+    NetworkInterface:
+      type: object
+      required: [name, index, flags, mtu, hardware_addr, addresses]
+      properties:
+        name:
+          type: string
+          description: "Interface name, e.g. \"eth0\" or \"lo\""
+        index:
+          type: integer
+          description: OS-assigned interface index
+        flags:
+          type: array
+          items:
+            type: string
+          description: "Interface flags, e.g. [\"UP\", \"BROADCAST\"]"
+        mtu:
+          type: integer
+          description: Maximum transmission unit in bytes
+        hardware_addr:
+          type: string
+          description: MAC address string; empty for loopback/virtual interfaces
+        addresses:
+          type: array
+          items:
+            $ref: "#/components/schemas/NetworkAddress"
+
+    NetworkInterfaceListResponse:
+      type: object
+      required: [interfaces]
+      properties:
+        interfaces:
+          type: array
+          items:
+            $ref: "#/components/schemas/NetworkInterface"
+
+    NetworkInterfaceActionRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [up, down, dhcp]
+          description: "\"up\" brings the interface up, \"down\" brings it down, \"dhcp\" renews the DHCP lease"
+
+    ACLPermission:
+      type: object
+      required: [type, qualifier, permissions]
+      properties:
+        type:
+          type: string
+          enum: [user, group, mask, other]
+        qualifier:
+          type: string
+          description: Username or group name; empty string for the owning user/group
+        permissions:
+          type: string
+          description: "Three-character permission string, e.g. \"rwx\", \"r--\", \"---\""
+
+    ACLInfo:
+      type: object
+      required: [path, owner, group, mode, acl_entries]
+      properties:
+        path:
+          type: string
+          description: Absolute path of the file or directory
+        owner:
+          type: string
+          description: Owning user (UID or name)
+        group:
+          type: string
+          description: Owning group (GID or name)
+        mode:
+          type: string
+          description: "Standard Unix permission string, e.g. \"-rwxr-xr-x\""
+        acl_entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/ACLPermission"
+          description: Extended POSIX ACL entries; empty array when no extended ACL is present
+
+    ACLSetRequest:
+      type: object
+      required: [path, entries]
+      properties:
+        path:
+          type: string
+          description: Absolute path of the file or directory
+        entries:
+          type: array
+          items:
+            type: string
+          description: "POSIX ACL entries in the format \"u:alice:rwx\" or \"g:devs:r-x\""
+          minItems: 1
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: UNAUTHORIZED
+            message: "authentication required"
+    Forbidden:
+      description: Insufficient permissions for the requested operation
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: FORBIDDEN
+            message: "operator or admin role required"
+    NotFound:
+      description: The requested resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: NOT_FOUND
+            message: "resource not found"
+    BadRequest:
+      description: Invalid request parameters or body
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: INVALID_INPUT
+            message: "path query parameter is required"
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: INTERNAL
+            message: "unexpected error"
+    Conflict:
+      description: Resource conflict (e.g. already mounted, already exists)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: CONFLICT
+            message: "/mnt/data is already mounted"
+
+security:
+  - BearerAuth: []
+
+paths:
+  /api/v1/health:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      description: Returns HTTP 200 as long as the daemon process is alive. No authentication required.
+      security: []
+      operationId: getHealth
+      responses:
+        "200":
+          description: Daemon is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                version: "v1.0.0"
+                go_os: linux
+                go_arch: amd64
+
+  /api/v1/version:
+    get:
+      tags: [Health]
+      summary: Application version
+      description: Returns the application version string. No authentication required.
+      security: []
+      operationId: getVersion
+      responses:
+        "200":
+          description: Version information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionResponse"
+              example:
+                version: "v1.0.0"
+
+  /api/v1/system/overview:
+    get:
+      tags: [System]
+      summary: Host resource snapshot
+      description: Returns a point-in-time snapshot of CPU, memory, and uptime. Any authenticated role may call this.
+      operationId: getSystemOverview
+      responses:
+        "200":
+          description: Current host resource snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostSnapshot"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/processes:
+    get:
+      tags: [Processes]
+      summary: List processes
+      description: Returns a paginated list of running processes. Any authenticated role may call this.
+      operationId: listProcesses
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+          description: Maximum number of processes to return (0 = no limit)
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number (1-based)
+      responses:
+        "200":
+          description: Process list with total count
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/processes/{pid}:
+    get:
+      tags: [Processes]
+      summary: Get process by PID
+      description: Returns details for a single process. Any authenticated role may call this.
+      operationId: getProcess
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+      responses:
+        "200":
+          description: Process details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Process"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      tags: [Processes]
+      summary: Terminate process (kill)
+      description: Sends SIGTERM to the specified process. Requires operator or admin role.
+      operationId: killProcess
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+      responses:
+        "204":
+          description: Process terminated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/files:
+    get:
+      tags: [Files]
+      summary: List directory contents
+      description: Returns file entries for a directory path. Any authenticated role may call this.
+      operationId: listFiles
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Absolute directory path to list
+      responses:
+        "200":
+          description: Directory entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    post:
+      tags: [Files]
+      summary: Create file or directory
+      description: Creates a file (with optional base64-encoded content) or a directory. Requires operator or admin role.
+      operationId: createFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FileWriteRequest"
+            examples:
+              createFile:
+                summary: Create a file
+                value:
+                  path: /tmp/hello.txt
+                  type: file
+                  content: aGVsbG8=
+              createDir:
+                summary: Create a directory
+                value:
+                  path: /tmp/mydir
+                  type: dir
+      responses:
+        "201":
+          description: File or directory created
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      tags: [Files]
+      summary: Delete file or directory
+      description: Deletes a file or directory. Requires operator or admin role.
+      operationId: deleteFile
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Absolute path to delete
+        - name: recursive
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Recursively delete directory contents
+      responses:
+        "204":
+          description: File or directory deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/files/stat:
+    get:
+      tags: [Files]
+      summary: Get file metadata
+      description: Returns metadata for a single file or directory. Any authenticated role may call this.
+      operationId: statFile
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Absolute path to query
+      responses:
+        "200":
+          description: File metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/files/read:
+    get:
+      tags: [Files]
+      summary: Read file content
+      description: Returns the base64-encoded content of a file. Any authenticated role may call this.
+      operationId: readFile
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Absolute path of the file to read
+      responses:
+        "200":
+          description: File content (base64-encoded)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileReadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/files/move:
+    put:
+      tags: [Files]
+      summary: Move or rename file
+      description: Moves (renames) a file or directory. Requires operator or admin role.
+      operationId: moveFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FileMoveOrCopyRequest"
+            example:
+              src: /tmp/old.txt
+              dst: /tmp/new.txt
+      responses:
+        "204":
+          description: File moved
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/files/copy:
+    put:
+      tags: [Files]
+      summary: Copy file
+      description: Copies a file or directory tree. Requires operator or admin role.
+      operationId: copyFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FileMoveOrCopyRequest"
+            example:
+              src: /tmp/a.txt
+              dst: /tmp/b.txt
+      responses:
+        "204":
+          description: File copied
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/shares:
+    get:
+      tags: [Shares]
+      summary: List all shares (Samba + NFS)
+      description: Returns all shares regardless of type. Any authenticated role may call this.
+      operationId: listShares
+      responses:
+        "200":
+          description: Share list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShareListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    post:
+      tags: [Shares]
+      summary: Create a share
+      description: Creates a new Samba or NFS share. Requires operator or admin role.
+      operationId: createShare
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Share"
+      responses:
+        "201":
+          description: Share created
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/shares/{name}:
+    get:
+      tags: [Shares]
+      summary: Get share by name
+      description: Returns a single share. Any authenticated role may call this.
+      operationId: getShare
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Share details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Share"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    put:
+      tags: [Shares]
+      summary: Update share
+      description: Replaces all fields of an existing share. Requires operator or admin role.
+      operationId: updateShare
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Share"
+      responses:
+        "204":
+          description: Share updated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      tags: [Shares]
+      summary: Delete share
+      description: Deletes a share and removes its configuration. Requires operator or admin role.
+      operationId: deleteShare
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Share deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/smb/shares:
+    get:
+      tags: [SMB]
+      summary: List SMB shares
+      description: Returns all Samba shares. Any authenticated role may call this.
+      operationId: listSMBShares
+      responses:
+        "200":
+          description: SMB share list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShareListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    post:
+      tags: [SMB]
+      summary: Create SMB share
+      description: Creates a new Samba share. Requires operator or admin role. The `type` field is forced to `"smb"`.
+      operationId: createSMBShare
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Share"
+      responses:
+        "201":
+          description: SMB share created
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/smb/shares/{name}:
+    get:
+      tags: [SMB]
+      summary: Get SMB share
+      description: Returns a single Samba share. Any authenticated role may call this.
+      operationId: getSMBShare
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SMB share details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Share"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    put:
+      tags: [SMB]
+      summary: Update SMB share
+      description: Updates a Samba share. Requires operator or admin role.
+      operationId: updateSMBShare
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Share"
+      responses:
+        "204":
+          description: SMB share updated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      tags: [SMB]
+      summary: Delete SMB share
+      description: Deletes a Samba share. Requires operator or admin role.
+      operationId: deleteSMBShare
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: SMB share deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/smb/users:
+    get:
+      tags: [SMB]
+      summary: List SMB users
+      description: Returns all Samba users. Any authenticated role may call this.
+      operationId: listSMBUsers
+      responses:
+        "200":
+          description: Samba user list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SambaUserListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    post:
+      tags: [SMB]
+      summary: Add SMB user
+      description: Adds a new Samba user. Requires operator or admin role. The password is never echoed back or logged.
+      operationId: addSMBUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SambaUserAddRequest"
+      responses:
+        "201":
+          description: User added
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/smb/users/{username}:
+    delete:
+      tags: [SMB]
+      summary: Remove SMB user
+      description: Removes a Samba user. Requires operator or admin role.
+      operationId: removeSMBUser
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: User removed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/smb/users/{username}/password:
+    put:
+      tags: [SMB]
+      summary: Set SMB user password
+      description: Changes the Samba password for a user. Requires operator or admin role. The password is never echoed back or logged.
+      operationId: setSMBUserPassword
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SambaUserSetPasswordRequest"
+      responses:
+        "204":
+          description: Password updated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/nfs/exports:
+    get:
+      tags: [NFS]
+      summary: List NFS exports
+      description: Returns all NFS exports. Any authenticated role may call this.
+      operationId: listNFSExports
+      responses:
+        "200":
+          description: NFS export list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShareListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    post:
+      tags: [NFS]
+      summary: Create NFS export
+      description: Creates a new NFS export. Requires operator or admin role. The `type` field is forced to `"nfs"`.
+      operationId: createNFSExport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Share"
+      responses:
+        "201":
+          description: NFS export created
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/nfs/exports/{name}:
+    get:
+      tags: [NFS]
+      summary: Get NFS export
+      description: Returns a single NFS export. Any authenticated role may call this.
+      operationId: getNFSExport
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: NFS export details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Share"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    put:
+      tags: [NFS]
+      summary: Update NFS export
+      description: Updates an NFS export. Requires operator or admin role.
+      operationId: updateNFSExport
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Share"
+      responses:
+        "204":
+          description: NFS export updated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      tags: [NFS]
+      summary: Delete NFS export
+      description: Deletes an NFS export. Requires operator or admin role.
+      operationId: deleteNFSExport
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: NFS export deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/disks/devices:
+    get:
+      tags: [Disks]
+      summary: List block devices
+      description: Lists all block devices (including unmounted) reported by lsblk. Any authenticated role may call this.
+      operationId: listDiskDevices
+      responses:
+        "200":
+          description: Block device list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockDeviceListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/disks/mounts:
+    get:
+      tags: [Disks]
+      summary: List current mounts
+      description: Returns current mount points from /proc/mounts. Any authenticated role may call this.
+      operationId: listMounts
+      responses:
+        "200":
+          description: Mount list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MountListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    post:
+      tags: [Disks]
+      summary: Mount a filesystem
+      description: Mounts a local device, CIFS, or NFS share. Requires operator or admin role. CIFS credentials are never echoed back or logged.
+      operationId: createMount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MountRequest"
+            examples:
+              localMount:
+                summary: Mount local disk
+                value:
+                  source: /dev/sdb1
+                  mount_point: /mnt/data
+                  fs_type: ext4
+              cifsMount:
+                summary: Mount CIFS share
+                value:
+                  source: //server/share
+                  mount_point: /mnt/cifs
+                  fs_type: cifs
+                  username: alice
+                  password: s3cr3t
+              nfsMount:
+                summary: Mount NFS export
+                value:
+                  source: "server:/export"
+                  mount_point: /mnt/nfs
+                  fs_type: nfs
+      responses:
+        "201":
+          description: Filesystem mounted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/disks/mounts/{mountpoint}:
+    delete:
+      tags: [Disks]
+      summary: Unmount a filesystem
+      description: Unmounts the filesystem at the given mountpoint. The mountpoint path must be URL-encoded. Requires operator or admin role.
+      operationId: deleteMount
+      parameters:
+        - name: mountpoint
+          in: path
+          required: true
+          schema:
+            type: string
+          description: "URL-encoded absolute mountpoint path, e.g. %2Fmnt%2Fdata for /mnt/data"
+          example: "%2Fmnt%2Fdata"
+      responses:
+        "204":
+          description: Filesystem unmounted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/disks/{device}/smart:
+    get:
+      tags: [Disks]
+      summary: Get SMART health information
+      description: |
+        Queries SMART data for a block device using smartctl.
+        Returns a structured error when smartctl is not installed, the device is not supported, or permissions are insufficient.
+        Any authenticated role may call this.
+      operationId: getDiskSMART
+      parameters:
+        - name: device
+          in: path
+          required: true
+          schema:
+            type: string
+          description: "URL-encoded device path. A short name (e.g. \"sda\") is automatically prefixed with \"/dev/\"."
+          example: sda
+      responses:
+        "200":
+          description: SMART health data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiskHealth"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/disks/{device}/power:
+    get:
+      tags: [Disks]
+      summary: Get disk power state
+      description: Returns the current power mode of a block device using hdparm -C. Any authenticated role may call this.
+      operationId: getDiskPower
+      parameters:
+        - name: device
+          in: path
+          required: true
+          schema:
+            type: string
+          description: "URL-encoded device path. A short name (e.g. \"sda\") is automatically prefixed with \"/dev/\"."
+          example: sda
+      responses:
+        "200":
+          description: Disk power state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiskPower"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    post:
+      tags: [Disks]
+      summary: Set disk power mode
+      description: Sets the disk power mode (standby or sleep) using hdparm. Requires operator or admin role.
+      operationId: setDiskPower
+      parameters:
+        - name: device
+          in: path
+          required: true
+          schema:
+            type: string
+          description: "URL-encoded device path. A short name (e.g. \"sda\") is automatically prefixed with \"/dev/\"."
+          example: sda
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiskPowerRequest"
+            example:
+              action: standby
+      responses:
+        "204":
+          description: Power mode set
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/network/interfaces:
+    get:
+      tags: [Network]
+      summary: List network interfaces
+      description: Returns all network interfaces with their addresses. Any authenticated role may call this.
+      operationId: listNetworkInterfaces
+      responses:
+        "200":
+          description: Network interface list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkInterfaceListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/network/interfaces/{name}:
+    get:
+      tags: [Network]
+      summary: Get network interface
+      description: Returns details for a single network interface. Any authenticated role may call this.
+      operationId: getNetworkInterface
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: "Interface name, e.g. \"eth0\""
+          example: eth0
+      responses:
+        "200":
+          description: Network interface details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkInterface"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    put:
+      tags: [Network]
+      summary: Change network interface state
+      description: Brings an interface up or down, or renews its DHCP lease. Requires admin role.
+      operationId: updateNetworkInterface
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: "Interface name, e.g. \"eth0\""
+          example: eth0
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NetworkInterfaceActionRequest"
+            example:
+              action: up
+      responses:
+        "204":
+          description: Interface action completed
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/acl:
+    get:
+      tags: [ACL]
+      summary: Get file/directory permissions and ACL
+      description: |
+        Returns Unix permissions and POSIX ACL entries for a file or directory.
+        When getfacl is not available, ACL entries are returned as an empty array
+        (graceful degradation). Any authenticated role may call this.
+      operationId: getACL
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Absolute path to query
+          example: /srv/data
+      responses:
+        "200":
+          description: ACL information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ACLInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    put:
+      tags: [ACL]
+      summary: Set POSIX ACL entries
+      description: |
+        Applies POSIX ACL entries to a file or directory using setfacl.
+        Requires operator or admin role. Path security validation prevents directory traversal.
+      operationId: setACL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ACLSetRequest"
+            example:
+              path: /srv/data
+              entries:
+                - "u:alice:rwx"
+                - "g:devs:r-x"
+      responses:
+        "204":
+          description: ACL entries applied
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
