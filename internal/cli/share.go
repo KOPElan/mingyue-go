@@ -14,9 +14,14 @@ import (
 
 func newShareCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "share",
-		Short: "Network share management commands",
-		Long: `Commands for querying and managing Samba/NFS network shares.
+		Use:        "share",
+		Short:      "Network share management (deprecated: use 'smb' or 'nfs')",
+		Deprecated: "use 'mingyue smb' for Samba shares and 'mingyue nfs' for NFS exports.",
+		Long: `Legacy unified share management commands (Samba + NFS).
+
+This command group is deprecated. Use the protocol-specific commands instead:
+  mingyue smb  — Samba (SMB/CIFS) share management and user administration
+  mingyue nfs  — NFS export management
 
 Share configuration is persisted to /var/lib/mingyue/shares.json and
 survives process restarts. Each create/update/delete operation also
@@ -25,19 +30,7 @@ regenerates the relevant service configuration files and signals a reload:
   Samba shares  → /etc/samba/smb.conf.d/mingyue.conf
                   (reload via: smbcontrol all reload-config)
   NFS shares    → /etc/exports.d/mingyue.exports
-                  (reload via: exportfs -ra)
-
-Samba config activation (one-time setup):
-  Add the following line to /etc/samba/smb.conf:
-    include = /etc/samba/smb.conf.d/mingyue.conf
-
-NFS config activation (one-time setup):
-  Ensure your kernel NFS server is started and /etc/exports.d/ is included
-  by /etc/exports (most distributions do this by default).
-
-Required permissions:
-  Samba changes : root (or write access to /etc/samba/smb.conf.d/ and smbd running)
-  NFS changes   : root (or write access to /etc/exports.d/ and nfs-kernel-server running)`,
+                  (reload via: exportfs -ra)`,
 	}
 	cmd.AddCommand(newShareListCmd())
 	cmd.AddCommand(newShareGetCmd())

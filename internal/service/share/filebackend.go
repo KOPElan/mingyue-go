@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"kopelan/mingyue-go/internal/domain"
@@ -255,6 +256,18 @@ func (b *fileBackend) writeSambaConf(shares []domain.Share) error {
 			buf.WriteString(fmt.Sprintf("    comment = %s\n", s.Comment))
 		}
 		buf.WriteString(fmt.Sprintf("    read only = %s\n", readOnly))
+		if s.ValidUsers != "" {
+			buf.WriteString(fmt.Sprintf("    valid users = %s\n", s.ValidUsers))
+		}
+		if s.WriteList != "" {
+			buf.WriteString(fmt.Sprintf("    write list = %s\n", s.WriteList))
+		}
+		if s.CreateMask != "" {
+			buf.WriteString(fmt.Sprintf("    create mask = %s\n", s.CreateMask))
+		}
+		if s.DirectoryMask != "" {
+			buf.WriteString(fmt.Sprintf("    directory mask = %s\n", s.DirectoryMask))
+		}
 		buf.WriteString("    browsable = yes\n\n")
 	}
 
@@ -292,9 +305,18 @@ func (b *fileBackend) writeNFSExports(shares []domain.Share) error {
 		if s.Comment != "" {
 			comment = " # " + s.Comment
 		}
-		// The wildcard "*" allows all hosts. In a future version this should be
-		// configurable per share (e.g. restrict to a subnet or specific host).
-		buf.WriteString(fmt.Sprintf("%s *(%s)%s\n", s.Path, opts, comment))
+		hosts := s.Hosts
+		if hosts == "" {
+			hosts = "*"
+		}
+		// hosts may be a single entry or space-separated list.  Each entry is
+		// wrapped with the export options in parentheses.
+		hostEntries := strings.Fields(hosts)
+		var hostParts []string
+		for _, h := range hostEntries {
+			hostParts = append(hostParts, fmt.Sprintf("%s(%s)", h, opts))
+		}
+		buf.WriteString(fmt.Sprintf("%s %s%s\n", s.Path, strings.Join(hostParts, " "), comment))
 	}
 
 	if err := os.WriteFile(b.cfg.NFSExportsPath, buf.Bytes(), 0640); err != nil {

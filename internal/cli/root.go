@@ -26,7 +26,7 @@ var rootCmd = &cobra.Command{
 	Long: `mingyue is a CLI tool and daemon for managing Linux hosts.
 
 It supports system monitoring, process management, disk / mount operations,
-file management, and network share management.
+file management, Samba share management, and NFS export management.
 
 Use --json to switch all output to machine-readable JSON format.`,
 }
@@ -57,6 +57,8 @@ func init() {
 	rootCmd.AddCommand(newProcessCmd())
 	rootCmd.AddCommand(newDiskCmd())
 	rootCmd.AddCommand(newFileCmd())
+	rootCmd.AddCommand(newSmbCmd())
+	rootCmd.AddCommand(newNfsCmd())
 	rootCmd.AddCommand(newShareCmd())
 }
 
