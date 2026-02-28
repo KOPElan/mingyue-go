@@ -45,9 +45,10 @@ func NewRouter() *Router {
 	devSvc := diskService.NewDeviceService()
 	fileMgr := fileService.NewManager("", auditLogger)
 	shareMgr := shareService.NewManager(auditLogger)
+	sambaUserMgr := shareService.NewSambaUserManager()
 
 	return &Router{
-		Handler:     NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr),
+		Handler:     NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr, sambaUserMgr),
 		auditLogger: auditLogger,
 	}
 }
@@ -63,6 +64,7 @@ func NewRouterWithDeps(
 	devSvc *diskService.DeviceService,
 	fileMgr *fileService.Manager,
 	shareMgr *shareService.Manager,
+	sambaUserMgr *shareService.SambaUserManager,
 ) http.Handler {
 	mux := http.NewServeMux()
 
@@ -92,6 +94,18 @@ func NewRouterWithDeps(
 	// ── Share management routes ───────────────────────────────────────────
 	mux.Handle("/api/v1/shares", auth(shareRootHandler(shareMgr)))
 	mux.Handle("/api/v1/shares/", auth(shareDispatchHandler(shareMgr)))
+
+	// ── SMB-specific routes ───────────────────────────────────────────────
+	mux.Handle("/api/v1/smb/shares", auth(smbShareRootHandler(shareMgr)))
+	mux.Handle("/api/v1/smb/shares/", auth(smbShareDispatchHandler(shareMgr)))
+	if sambaUserMgr != nil {
+		mux.Handle("/api/v1/smb/users", auth(smbUserRootHandler(sambaUserMgr)))
+		mux.Handle("/api/v1/smb/users/", auth(smbUserDispatchHandler(sambaUserMgr)))
+	}
+
+	// ── NFS-specific routes ───────────────────────────────────────────────
+	mux.Handle("/api/v1/nfs/exports", auth(nfsExportRootHandler(shareMgr)))
+	mux.Handle("/api/v1/nfs/exports/", auth(nfsExportDispatchHandler(shareMgr)))
 
 	// ── Disk / mount routes ───────────────────────────────────────────────
 

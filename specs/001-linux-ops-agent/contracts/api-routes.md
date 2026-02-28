@@ -1,4 +1,4 @@
-# HTTP API 路由契约（Phase 1–4）
+# HTTP API 路由契约（Phase 1–4 / SMB+NFS 拆分）
 
 本文件定义已实现的 HTTP API 端点的请求/响应结构与错误约定，作为 API 行为的稳定契约。
 
@@ -415,6 +415,12 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 | `POST /api/v1/shares` | 成功或失败均记录（`share.create`） |
 | `PUT /api/v1/shares/{name}` | 成功或失败均记录（`share.update`） |
 | `DELETE /api/v1/shares/{name}` | 成功或失败均记录（`share.delete`） |
+| `POST /api/v1/smb/shares` | 成功或失败均记录（`share.create`） |
+| `PUT /api/v1/smb/shares/{name}` | 成功或失败均记录（`share.update`） |
+| `DELETE /api/v1/smb/shares/{name}` | 成功或失败均记录（`share.delete`） |
+| `POST /api/v1/nfs/exports` | 成功或失败均记录（`share.create`） |
+| `PUT /api/v1/nfs/exports/{name}` | 成功或失败均记录（`share.update`） |
+| `DELETE /api/v1/nfs/exports/{name}` | 成功或失败均记录（`share.delete`） |
 
 **审计事件示例**
 
@@ -678,9 +684,27 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 > NFS exports 片段写入 `/etc/exports.d/mingyue.exports`。
 > 服务重载：Samba 类型共享触发 `smbcontrol all reload-config`；NFS 类型共享触发 `exportfs -ra`。
 
-### GET /api/v1/shares
+### Share 对象字段
 
-列出所有已配置的共享。**需要 viewer 或以上角色**。
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string | 共享名称（不含 `/`） |
+| `type` | string | `"smb"` 或 `"nfs"` |
+| `path` | string | 本地共享目录 |
+| `comment` | string | 可选描述 |
+| `read_only` | bool | 是否只读 |
+| `enabled` | bool | 是否启用 |
+| `valid_users` | string | **Samba 专属** 空格或逗号分隔的用户或 `@组`（空表示所有认证用户） |
+| `write_list` | string | **Samba 专属** 拥有写权限的用户或 `@组`（空格或逗号分隔） |
+| `create_mask` | string | **Samba 专属** 新建文件的八进制权限掩码，如 `"0644"` |
+| `directory_mask` | string | **Samba 专属** 新建目录的八进制权限掩码，如 `"0755"` |
+| `hosts` | string | **NFS 专属** 空格分隔的主机/CIDR（空表示 `*` 全部允许） |
+
+---
+
+### GET /api/v1/shares *(已弃用，请使用 `/api/v1/smb/shares` 或 `/api/v1/nfs/exports`)*
+
+列出所有已配置的共享（Samba + NFS 混合）。**需要 viewer 或以上角色**。
 
 **响应 200**
 
@@ -699,16 +723,6 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 }
 ```
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `shares` | array | 共享列表（可为空数组） |
-| `shares[].name` | string | 共享名称（不含 `/`） |
-| `shares[].type` | string | `"smb"` 或 `"nfs"` |
-| `shares[].path` | string | 本地共享目录 |
-| `shares[].comment` | string | 可选描述 |
-| `shares[].read_only` | bool | 是否只读 |
-| `shares[].enabled` | bool | 是否启用 |
-
 **错误响应**
 
 | HTTP 状态码 | 错误码 | 触发条件 |
@@ -718,13 +732,13 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 
 ---
 
-### GET /api/v1/shares/{name}
+### GET /api/v1/shares/{name} *(已弃用)*
 
-查询指定共享详情。**需要 viewer 或以上角色**。
+查询指定共享详情（类型不限）。**需要 viewer 或以上角色**。
 
 **路径参数**：`name` — 共享名称
 
-**响应 200**：单个 Share 对象（字段同 `shares[]` 条目）
+**响应 200**：单个 Share 对象（字段参见上方 Share 对象字段表）
 
 **错误响应**
 
@@ -736,31 +750,11 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 
 ---
 
-### POST /api/v1/shares
+### POST /api/v1/shares *(已弃用，请使用 `/api/v1/smb/shares` 或 `/api/v1/nfs/exports`)*
 
 创建新共享并重载服务。**需要 operator 或 admin 角色**。审计记录 `share.create`。
 
-**请求体**
-
-```json
-{
-  "name": "myshare",
-  "type": "smb",
-  "path": "/srv/myshare",
-  "comment": "optional description",
-  "read_only": false,
-  "enabled": true
-}
-```
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | string（必填） | 共享名称，不可含 `/` |
-| `type` | string（必填） | `"smb"` 或 `"nfs"` |
-| `path` | string（必填） | 本地共享目录 |
-| `comment` | string | 可选描述 |
-| `read_only` | bool | 是否只读，默认 `false` |
-| `enabled` | bool | 是否启用，默认 `true` |
+**请求体**：Share 对象（`type` 字段决定后端，支持 Samba 和 NFS 专属字段）
 
 **响应 201**：无响应体
 
@@ -776,13 +770,13 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 
 ---
 
-### PUT /api/v1/shares/{name}
+### PUT /api/v1/shares/{name} *(已弃用)*
 
 更新指定共享并重载服务。**需要 operator 或 admin 角色**。审计记录 `share.update`。重载失败时自动回滚至原始配置。
 
-**路径参数**：`name` — 共享名称（与请求体中的 name 一致；路径参数优先）
+**路径参数**：`name` — 共享名称（路径参数优先）
 
-**请求体**：同 `POST /api/v1/shares`（`name` 字段可省略，以路径参数为准）
+**请求体**：同 `POST /api/v1/shares`（`name` 字段可省略）
 
 **响应 204**：无响应体
 
@@ -798,7 +792,7 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 
 ---
 
-### DELETE /api/v1/shares/{name}
+### DELETE /api/v1/shares/{name} *(已弃用)*
 
 删除指定共享并重载服务。**需要 operator 或 admin 角色**。审计记录 `share.delete`。重载失败时自动回滚（重新创建该共享）。
 
@@ -814,4 +808,390 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 | 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
 | 403 | `FORBIDDEN` | 角色不足（viewer） |
 | 404 | `NOT_FOUND` | 共享不存在 |
+| 500 | `INTERNAL` | 删除或重载失败 |
+
+---
+
+## Phase 4 — Samba 专属端点
+
+> 以下端点仅操作 `type = "smb"` 的共享。创建/更新时 `type` 字段由服务端强制写入，无需在请求体中指定。
+
+### GET /api/v1/smb/shares
+
+列出所有 Samba 共享。**需要 viewer 或以上角色**。
+
+**响应 200**
+
+```json
+{
+  "shares": [
+    {
+      "name": "myshare",
+      "type": "smb",
+      "path": "/srv/myshare",
+      "comment": "My share",
+      "read_only": false,
+      "enabled": true,
+      "valid_users": "alice @staff",
+      "write_list": "alice",
+      "create_mask": "0644",
+      "directory_mask": "0755"
+    }
+  ]
+}
+```
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 500 | `INTERNAL` | 列表获取失败 |
+
+---
+
+### GET /api/v1/smb/shares/{name}
+
+查询指定 Samba 共享。**需要 viewer 或以上角色**。
+
+**路径参数**：`name` — 共享名称
+
+**响应 200**：单个 Share 对象（含 Samba 专属字段）
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | 名称为空 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 404 | `NOT_FOUND` | 共享不存在或类型不为 smb |
+
+---
+
+### POST /api/v1/smb/shares
+
+创建 Samba 共享并重载 smbd。**需要 operator 或 admin 角色**。审计记录 `share.create`。
+
+**请求体**
+
+```json
+{
+  "name": "myshare",
+  "path": "/srv/myshare",
+  "comment": "optional description",
+  "read_only": false,
+  "enabled": true,
+  "valid_users": "alice @staff",
+  "write_list": "alice",
+  "create_mask": "0644",
+  "directory_mask": "0755"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string（必填） | 共享名称，不可含 `/` |
+| `path` | string（必填） | 本地共享目录 |
+| `comment` | string | 可选描述 |
+| `read_only` | bool | 是否只读，默认 `false` |
+| `enabled` | bool | 是否启用，默认 `true` |
+| `valid_users` | string | 允许连接的用户或 `@组`（空格或逗号分隔；空表示所有认证用户） |
+| `write_list` | string | 拥有写权限的用户或 `@组`（空格或逗号分隔） |
+| `create_mask` | string | 新建文件权限掩码（八进制字符串，如 `"0644"`） |
+| `directory_mask` | string | 新建目录权限掩码（八进制字符串，如 `"0755"`） |
+
+**响应 201**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | JSON 错误、必填字段缺失、名称含 `/` |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（viewer） |
+| 409 | `CONFLICT` | 同名共享已存在 |
+| 500 | `INTERNAL` | 创建失败或 smbd 重载失败 |
+
+---
+
+### PUT /api/v1/smb/shares/{name}
+
+更新 Samba 共享并重载 smbd。**需要 operator 或 admin 角色**。审计记录 `share.update`。重载失败时自动回滚。
+
+**路径参数**：`name` — 共享名称（路径参数优先）
+
+**请求体**：同 `POST /api/v1/smb/shares`（`name` 字段可省略）
+
+**响应 204**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | JSON 错误、必填字段缺失 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（viewer） |
+| 404 | `NOT_FOUND` | 共享不存在 |
+| 500 | `INTERNAL` | 更新或重载失败 |
+
+---
+
+### DELETE /api/v1/smb/shares/{name}
+
+删除 Samba 共享并重载 smbd。**需要 operator 或 admin 角色**。审计记录 `share.delete`。重载失败时自动回滚。
+
+**路径参数**：`name` — 共享名称
+
+**响应 204**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | 名称为空 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（viewer） |
+| 404 | `NOT_FOUND` | 共享不存在 |
+| 500 | `INTERNAL` | 删除或重载失败 |
+
+---
+
+## Phase 4 — Samba 用户管理端点
+
+> 管理 Samba 密码数据库（tdbsam）中的用户账号，与系统 `/etc/shadow` 独立。
+> Linux 系统账号必须存在，才能注册为 Samba 用户。
+> 密码字段在传输中敏感，**不会**记录到审计日志。
+
+### GET /api/v1/smb/users
+
+列出所有 Samba 用户。**需要 viewer 或以上角色**。
+
+**响应 200**
+
+```json
+{
+  "users": [
+    { "username": "alice" },
+    { "username": "bob" }
+  ]
+}
+```
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 500 | `INTERNAL` | pdbedit 命令失败 |
+
+---
+
+### POST /api/v1/smb/users
+
+向 Samba 数据库添加用户并设置初始密码。**需要 operator 或 admin 角色**。
+
+**请求体**
+
+```json
+{
+  "username": "alice",
+  "password": "s3cr3t"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `username` | string（必填） | 已存在的 Linux 用户名 |
+| `password` | string（必填） | 初始 Samba 密码（不记录到日志） |
+
+**响应 201**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | JSON 错误或用户名为空 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（viewer） |
+| 500 | `INTERNAL` | smbpasswd 命令失败（用户不存在等） |
+
+---
+
+### DELETE /api/v1/smb/users/{username}
+
+从 Samba 数据库删除用户。**需要 operator 或 admin 角色**。
+
+**路径参数**：`username` — Samba 用户名
+
+**响应 204**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | 用户名为空 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（viewer） |
+| 500 | `INTERNAL` | smbpasswd 命令失败 |
+
+---
+
+### PUT /api/v1/smb/users/{username}/password
+
+修改 Samba 用户密码。**需要 operator 或 admin 角色**。
+
+**路径参数**：`username` — Samba 用户名
+
+**请求体**
+
+```json
+{
+  "password": "newpassword"
+}
+```
+
+**响应 204**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | JSON 错误或用户名为空 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（viewer） |
+| 500 | `INTERNAL` | smbpasswd 命令失败 |
+
+---
+
+## Phase 4 — NFS 专属端点
+
+> 以下端点仅操作 `type = "nfs"` 的导出。创建/更新时 `type` 字段由服务端强制写入，无需在请求体中指定。
+
+### GET /api/v1/nfs/exports
+
+列出所有 NFS 导出。**需要 viewer 或以上角色**。
+
+**响应 200**
+
+```json
+{
+  "exports": [
+    {
+      "name": "nfsdata",
+      "type": "nfs",
+      "path": "/data/nfs",
+      "comment": "Data export",
+      "read_only": false,
+      "enabled": true,
+      "hosts": "192.168.1.0/24 10.0.0.5"
+    }
+  ]
+}
+```
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 500 | `INTERNAL` | 列表获取失败 |
+
+---
+
+### GET /api/v1/nfs/exports/{name}
+
+查询指定 NFS 导出。**需要 viewer 或以上角色**。
+
+**路径参数**：`name` — 导出名称
+
+**响应 200**：单个 Share 对象（含 NFS 专属 `hosts` 字段）
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | 名称为空 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 404 | `NOT_FOUND` | 导出不存在或类型不为 nfs |
+
+---
+
+### POST /api/v1/nfs/exports
+
+创建 NFS 导出并重载 exportfs。**需要 operator 或 admin 角色**。审计记录 `share.create`。
+
+**请求体**
+
+```json
+{
+  "name": "nfsdata",
+  "path": "/data/nfs",
+  "comment": "optional description",
+  "read_only": false,
+  "enabled": true,
+  "hosts": "192.168.1.0/24 10.0.0.5"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string（必填） | 导出名称，不可含 `/` |
+| `path` | string（必填） | 本地导出目录 |
+| `comment` | string | 可选描述 |
+| `read_only` | bool | 是否只读，默认 `false` |
+| `enabled` | bool | 是否启用，默认 `true` |
+| `hosts` | string | 空格分隔的主机/CIDR（空表示 `*` 全部允许） |
+
+**响应 201**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | JSON 错误、必填字段缺失、名称含 `/` |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（viewer） |
+| 409 | `CONFLICT` | 同名导出已存在 |
+| 500 | `INTERNAL` | 创建失败或 exportfs 重载失败 |
+
+---
+
+### PUT /api/v1/nfs/exports/{name}
+
+更新 NFS 导出并重载 exportfs。**需要 operator 或 admin 角色**。审计记录 `share.update`。重载失败时自动回滚。
+
+**路径参数**：`name` — 导出名称（路径参数优先）
+
+**请求体**：同 `POST /api/v1/nfs/exports`（`name` 字段可省略）
+
+**响应 204**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | JSON 错误、必填字段缺失 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（viewer） |
+| 404 | `NOT_FOUND` | 导出不存在 |
+| 500 | `INTERNAL` | 更新或重载失败 |
+
+---
+
+### DELETE /api/v1/nfs/exports/{name}
+
+删除 NFS 导出并重载 exportfs。**需要 operator 或 admin 角色**。审计记录 `share.delete`。重载失败时自动回滚。
+
+**路径参数**：`name` — 导出名称
+
+**响应 204**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | 名称为空 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（viewer） |
+| 404 | `NOT_FOUND` | 导出不存在 |
 | 500 | `INTERNAL` | 删除或重载失败 |

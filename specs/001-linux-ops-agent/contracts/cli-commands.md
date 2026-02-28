@@ -1,4 +1,4 @@
-# CLI 命令契约（Phase 1–4）
+# CLI 命令契约（Phase 1–4 / SMB+NFS 拆分）
 
 本文件定义已实现的 CLI 命令的参数、输出字段与退出码约定，作为 CLI 行为的稳定契约。
 
@@ -668,29 +668,41 @@ mingyue file write <path> --content <text> [--root DIR] [--json]
 
 ---
 
-## Phase 4 — mingyue share
+## Phase 4 — mingyue share *(已弃用)*
 
-网络共享管理命令组。
+> **已弃用**：请改用协议专属命令 `mingyue smb` 或 `mingyue nfs`。
+> 运行任何 `share` 子命令时，系统会自动打印弃用提示。
 
-> 共享配置持久化至 `/var/lib/mingyue/shares.json`，进程重启后自动恢复。
-> `create`/`update`/`delete` 操作会自动重新生成 Samba（`/etc/samba/smb.conf.d/mingyue.conf`）和 NFS（`/etc/exports.d/mingyue.exports`）配置片段，并触发相应服务重载。
+共享配置持久化至 `/var/lib/mingyue/shares.json`，进程重启后自动恢复。
+
+子命令（`list`、`get`、`create`、`update`、`delete`）语义与下文 `smb`/`nfs` 对应命令相同，但 `create`/`update` 须通过 `--type smb|nfs` 明确指定协议类型。
 
 ---
 
-### mingyue share list
+## Phase 4 — mingyue smb
 
-列出所有已配置的网络共享。
+Samba (SMB/CIFS) 共享管理与用户管理命令组。
+
+> 共享配置持久化至 `/var/lib/mingyue/shares.json`。
+> `create`/`update`/`delete` 操作会自动重新生成 `/etc/samba/smb.conf.d/mingyue.conf` 并触发 `smbcontrol all reload-config`。
+> 一次性前置操作：在 `/etc/samba/smb.conf` 中添加 `include = /etc/samba/smb.conf.d/mingyue.conf`。
+
+---
+
+### mingyue smb list
+
+列出所有 Samba 共享。
 
 ```sh
-mingyue share list [--json]
+mingyue smb list [--json]
 ```
 
 **人类可读输出示例**
 
 ```
-NAME                 TYPE   ENABLED   PATH
-myshare              smb    yes       /srv/myshare
-nfsdata              nfs    yes       /data/nfs
+NAME                 ENABLED   PATH
+myshare              yes       /srv/myshare
+data                 yes       /data
 ```
 
 **JSON 输出示例**
@@ -704,69 +716,72 @@ nfsdata              nfs    yes       /data/nfs
       "path": "/srv/myshare",
       "comment": "",
       "read_only": false,
-      "enabled": true
+      "enabled": true,
+      "valid_users": "alice @staff",
+      "write_list": "alice",
+      "create_mask": "0644",
+      "directory_mask": "0755"
     }
   ]
 }
 ```
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `shares` | array | 共享列表（可为空数组） |
-| `shares[].name` | string | 共享名称 |
-| `shares[].type` | string | `"smb"` 或 `"nfs"` |
-| `shares[].path` | string | 本地共享目录 |
-| `shares[].comment` | string | 描述 |
-| `shares[].read_only` | bool | 是否只读 |
-| `shares[].enabled` | bool | 是否启用 |
-
 **退出码**：`0` 成功；`1` 失败
 
 ---
 
-### mingyue share get
+### mingyue smb get
 
-查看指定共享的详情。
+查看指定 Samba 共享的详情。
 
 ```sh
-mingyue share get <name> [--json]
+mingyue smb get <name> [--json]
 ```
 
 **人类可读输出示例**
 
 ```
-Name     : myshare
-Type     : smb
-Path     : /srv/myshare
-Comment  :
-ReadOnly : false
-Enabled  : true
+Name          : myshare
+Path          : /srv/myshare
+Comment       :
+ReadOnly      : false
+Enabled       : true
+ValidUsers    : alice @staff
+WriteList     : alice
+CreateMask    : 0644
+DirectoryMask : 0755
 ```
 
-**JSON 输出**：单个 Share 对象（字段同 `share list` shares[] 条目）
+**JSON 输出**：单个 Share 对象（字段同 `smb list` shares[] 条目）
 
 **退出码**：`0` 成功；`1` 共享不存在
 
 ---
 
-### mingyue share create
+### mingyue smb create
 
-创建新的网络共享。
+创建新的 Samba 共享。
 
 ```sh
-mingyue share create <name> --path <dir> [--type smb|nfs] [--comment TEXT]
-                            [--read-only] [--enabled] [--json]
+mingyue smb create <name> --path <dir> [--comment TEXT]
+                          [--read-only] [--enabled]
+                          [--valid-users USERS] [--write-list USERS]
+                          [--create-mask MASK] [--dir-mask MASK]
+                          [--json]
 ```
 
 | 标志 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--path` | string | — | 本地共享目录（**必填**） |
-| `--type` | string | `smb` | 共享类型：`smb` 或 `nfs` |
 | `--comment` | string | `""` | 可选描述 |
 | `--read-only` | bool | `false` | 是否只读导出 |
 | `--enabled` | bool | `true` | 是否立即启用 |
+| `--valid-users` | string | `""` | 允许连接的用户或 `@组`（空表示所有认证用户） |
+| `--write-list` | string | `""` | 拥有写权限的用户或 `@组` |
+| `--create-mask` | string | `""` | 新建文件权限掩码（如 `0644`） |
+| `--dir-mask` | string | `""` | 新建目录权限掩码（如 `0755`） |
 
-**人类可读输出**：`Share created: myshare`
+**人类可读输出**：`Samba share created: myshare`
 
 **JSON 输出示例**
 
@@ -774,22 +789,21 @@ mingyue share create <name> --path <dir> [--type smb|nfs] [--comment TEXT]
 { "name": "myshare", "result": "created" }
 ```
 
-**退出码**：`0` 成功；`1` 校验失败（名称含 `/`、路径为空、类型不支持）、名称已存在（`CONFLICT`）或服务重载失败
+**退出码**：`0` 成功；`1` 校验失败、名称已存在（`CONFLICT`）或服务重载失败
 
 ---
 
-### mingyue share update
+### mingyue smb update
 
-更新已有共享。
+更新已有 Samba 共享。
 
 ```sh
-mingyue share update <name> --path <dir> [--type smb|nfs] [--comment TEXT]
-                            [--read-only] [--enabled] [--json]
+mingyue smb update <name> --path <dir> [标志同 smb create]
 ```
 
-标志同 `share create`。`--path` 为必填。
+所有字段均以提供值替换。`--path` 为必填。
 
-**人类可读输出**：`Share updated: myshare`
+**人类可读输出**：`Samba share updated: myshare`
 
 **JSON 输出示例**
 
@@ -801,15 +815,15 @@ mingyue share update <name> --path <dir> [--type smb|nfs] [--comment TEXT]
 
 ---
 
-### mingyue share delete
+### mingyue smb delete
 
-删除指定共享。
+删除指定 Samba 共享。
 
 ```sh
-mingyue share delete <name> [--json]
+mingyue smb delete <name> [--json]
 ```
 
-**人类可读输出**：`Share deleted: myshare`
+**人类可读输出**：`Samba share deleted: myshare`
 
 **JSON 输出示例**
 
@@ -818,3 +832,236 @@ mingyue share delete <name> [--json]
 ```
 
 **退出码**：`0` 成功；`1` 共享不存在或重载失败
+
+---
+
+### mingyue smb user list
+
+列出所有 Samba 用户（来自 Samba 密码数据库 tdbsam）。
+
+```sh
+mingyue smb user list [--json]
+```
+
+**人类可读输出示例**
+
+```
+alice
+bob
+```
+
+**JSON 输出示例**
+
+```json
+{ "users": [{ "username": "alice" }, { "username": "bob" }] }
+```
+
+**退出码**：`0` 成功；`1` 失败（pdbedit 不可用等）
+
+---
+
+### mingyue smb user add
+
+将 Linux 用户添加到 Samba 数据库并设置初始密码（从 stdin 读取）。
+
+```sh
+echo "password" | mingyue smb user add <username> [--json]
+```
+
+Linux 系统账号必须已存在才能添加为 Samba 用户。
+
+**人类可读输出**：`Samba user added: alice`
+
+**JSON 输出示例**
+
+```json
+{ "username": "alice", "result": "added" }
+```
+
+**退出码**：`0` 成功；`1` 用户不存在、密码未提供或命令失败
+
+---
+
+### mingyue smb user remove
+
+从 Samba 数据库删除用户。
+
+```sh
+mingyue smb user remove <username> [--json]
+```
+
+**人类可读输出**：`Samba user removed: alice`
+
+**JSON 输出示例**
+
+```json
+{ "username": "alice", "result": "removed" }
+```
+
+**退出码**：`0` 成功；`1` 用户不存在或命令失败
+
+---
+
+### mingyue smb user passwd
+
+修改 Samba 用户密码（从 stdin 读取）。
+
+```sh
+echo "newpassword" | mingyue smb user passwd <username> [--json]
+```
+
+**人类可读输出**：`Samba password updated for: alice`
+
+**JSON 输出示例**
+
+```json
+{ "username": "alice", "result": "password updated" }
+```
+
+**退出码**：`0` 成功；`1` 用户不存在、密码未提供或命令失败
+
+---
+
+## Phase 4 — mingyue nfs
+
+NFS (Network File System) 导出管理命令组。
+
+> 导出配置持久化至 `/var/lib/mingyue/shares.json`。
+> `create`/`update`/`delete` 操作会自动重新生成 `/etc/exports.d/mingyue.exports` 并触发 `exportfs -ra`。
+> 前置条件：确保 `/etc/exports.d/` 被 `/etc/exports` 包含（多数发行版默认已配置）。
+
+---
+
+### mingyue nfs list
+
+列出所有 NFS 导出。
+
+```sh
+mingyue nfs list [--json]
+```
+
+**人类可读输出示例**
+
+```
+NAME                 ENABLED   HOSTS             PATH
+nfsdata              yes       *                 /data/nfs
+restricted           yes       192.168.1.0/24    /srv/data
+```
+
+**JSON 输出示例**
+
+```json
+{
+  "exports": [
+    {
+      "name": "nfsdata",
+      "type": "nfs",
+      "path": "/data/nfs",
+      "comment": "",
+      "read_only": false,
+      "enabled": true,
+      "hosts": ""
+    }
+  ]
+}
+```
+
+**退出码**：`0` 成功；`1` 失败
+
+---
+
+### mingyue nfs get
+
+查看指定 NFS 导出的详情。
+
+```sh
+mingyue nfs get <name> [--json]
+```
+
+**人类可读输出示例**
+
+```
+Name     : nfsdata
+Path     : /data/nfs
+Comment  :
+ReadOnly : false
+Enabled  : true
+Hosts    : *
+```
+
+**JSON 输出**：单个 Share 对象（含 `hosts` 字段）
+
+**退出码**：`0` 成功；`1` 导出不存在
+
+---
+
+### mingyue nfs create
+
+创建新的 NFS 导出。
+
+```sh
+mingyue nfs create <name> --path <dir> [--comment TEXT]
+                          [--read-only] [--enabled]
+                          [--hosts "HOST1 HOST2"]
+                          [--json]
+```
+
+| 标志 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--path` | string | — | 本地导出目录（**必填**） |
+| `--comment` | string | `""` | 可选描述 |
+| `--read-only` | bool | `false` | 是否只读导出 |
+| `--enabled` | bool | `true` | 是否立即启用 |
+| `--hosts` | string | `""` | 空格分隔的主机/CIDR（空表示 `*` 全部允许） |
+
+**人类可读输出**：`NFS export created: nfsdata`
+
+**JSON 输出示例**
+
+```json
+{ "name": "nfsdata", "result": "created" }
+```
+
+**退出码**：`0` 成功；`1` 校验失败、名称已存在（`CONFLICT`）或服务重载失败
+
+---
+
+### mingyue nfs update
+
+更新已有 NFS 导出。
+
+```sh
+mingyue nfs update <name> --path <dir> [标志同 nfs create]
+```
+
+所有字段均以提供值替换。`--path` 为必填。
+
+**人类可读输出**：`NFS export updated: nfsdata`
+
+**JSON 输出示例**
+
+```json
+{ "name": "nfsdata", "result": "updated" }
+```
+
+**退出码**：`0` 成功；`1` 导出不存在、校验失败或重载失败
+
+---
+
+### mingyue nfs delete
+
+删除指定 NFS 导出。
+
+```sh
+mingyue nfs delete <name> [--json]
+```
+
+**人类可读输出**：`NFS export deleted: nfsdata`
+
+**JSON 输出示例**
+
+```json
+{ "name": "nfsdata", "result": "deleted" }
+```
+
+**退出码**：`0` 成功；`1` 导出不存在或重载失败
