@@ -323,11 +323,10 @@ specs/001-linux-ops-agent/contracts/
 └── cli-commands.md     # CLI 命令契约（参数/输出字段/退出码）
 ```
 
-项目预留 OpenAPI v3 规范文件路径（Phase 6 交付）：
+完整的 OpenAPI v3 规范文件：
 
 ```
-docs/api/openapi.yaml    # YAML 格式（主要版本）
-docs/api/openapi.json    # JSON 格式（按需使用）
+docs/api/openapi.yaml    # OpenAPI v3 规范（v1 全量端点，YAML 格式）
 ```
 
 所有 API 端点位于路径前缀 `/api/v1`，返回 HTTP+JSON，错误响应包含机器可解析的错误码与人类可读信息。
@@ -385,8 +384,7 @@ pkg/
 
 docs/
 └── api/
-    ├── openapi.yaml             # OpenAPI v3 规范（v1 全量端点）
-    └── openapi.json             # 同上，JSON 格式
+    └── openapi.yaml             # OpenAPI v3 规范（v1 全量端点）
 
 scripts/
 ├── install.sh                   # 安装守护进程（systemd service 注册）
@@ -480,7 +478,7 @@ go vet ./...
 | **Phase 4** ✅ | 文件管理 + 共享管理：文件操作（路径安全+符号链接防护）、Samba/NFS 共享 CRUD（内存占位）、审计日志完善 | 已完成 |
 | **Phase 4.x** ✅ | 共享管理持久化：JSON 状态文件落盘（`/var/lib/mingyue/shares.json`）、自动生成 Samba 配置片段（`/etc/samba/smb.conf.d/mingyue.conf`）、自动生成 NFS exports 片段（`/etc/exports.d/mingyue.exports`）、服务重载（`smbcontrol all reload-config` / `exportfs -ra`）、进程重启后状态自动恢复 | 已完成 |
 | **Phase 5** ✅ | 网络管理 + 权限/ACL：网络接口只读查询与受控变更（up/down/dhcp）、文件/目录权限与 POSIX ACL 查询（getfacl）与设置（setfacl）、审计日志 | 已完成 |
-| **Phase 6** | OpenAPI 规范 + CI 文档同步 + 安装脚本（`install.sh`）+ README | 待定 |
+| **Phase 6** ✅ | OpenAPI 规范 + CI 文档同步 + 安装脚本（`install.sh`/`uninstall.sh`）| 已完成 |
 
 ## License
 

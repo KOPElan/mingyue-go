@@ -1,0 +1,82 @@
+name: OpenAPI Sync Check
+
+on:
+  pull_request:
+    branches: ["**"]
+  push:
+    branches: ["**"]
+
+jobs:
+  openapi-lint:
+    name: Validate OpenAPI Spec
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Redocly CLI
+        run: npm install -g @redocly/cli@latest
+
+      - name: Lint OpenAPI spec
+        run: redocly lint docs/api/openapi.yaml
+
+  openapi-coverage:
+    name: Check OpenAPI Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify OpenAPI file exists
+        run: |
+          if [ ! -f docs/api/openapi.yaml ]; then
+            echo "ERROR: docs/api/openapi.yaml is missing."
+            echo "Please generate or update the OpenAPI spec before merging."
+            exit 1
+          fi
+          echo "docs/api/openapi.yaml found."
+
+      - name: Check key endpoints are documented
+        run: |
+          SPEC=docs/api/openapi.yaml
+          MISSING=()
+
+          # Core endpoints that must always be present in the spec
+          REQUIRED_PATHS=(
+            "/api/v1/health"
+            "/api/v1/version"
+            "/api/v1/system/overview"
+            "/api/v1/processes"
+            "/api/v1/files"
+            "/api/v1/shares"
+            "/api/v1/smb/shares"
+            "/api/v1/nfs/exports"
+            "/api/v1/disks/mounts"
+            "/api/v1/disks/devices"
+            "/api/v1/network/interfaces"
+            "/api/v1/acl"
+          )
+
+          for path in "${REQUIRED_PATHS[@]}"; do
+            if ! grep -qF "\"$path\"" "$SPEC" && ! grep -qF "'$path'" "$SPEC" && ! grep -q "^  $path:" "$SPEC"; then
+              MISSING+=("$path")
+            fi
+          done
+
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "ERROR: The following required API paths are missing from docs/api/openapi.yaml:"
+            for m in "${MISSING[@]}"; do
+              echo "  - $m"
+            done
+            echo ""
+            echo "Please update docs/api/openapi.yaml to document all API endpoints."
+            exit 1
+          fi
+
+          echo "All required API paths are documented in docs/api/openapi.yaml."
