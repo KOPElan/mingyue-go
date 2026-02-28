@@ -17,6 +17,9 @@ const (
 	ErrForbidden    ErrorCode = "FORBIDDEN"
 	ErrInternal     ErrorCode = "INTERNAL"
 	ErrInvalidInput ErrorCode = "INVALID_INPUT"
+	// ErrConflict is returned when a resource already exists or a state conflict
+	// is detected (e.g. mounting an already-mounted mountpoint).
+	ErrConflict ErrorCode = "CONFLICT"
 )
 
 // AppError is the unified error type used throughout the application.

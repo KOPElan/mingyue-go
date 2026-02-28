@@ -70,7 +70,7 @@ func (s *stubACLWriter) SetOwner(_ context.Context, _, _, _ string) error {
 func buildNetRouter(nr netService.Reader, nc netService.Commander, ar aclService.Reader, aw aclService.Writer) http.Handler {
 	netMgr := netService.NewManagerWithDeps(nr, nc, nil)
 	aclMgr := aclService.NewManagerWithDeps(ar, aw, nil)
-	return api.NewRouterWithDeps(nil, nil, netMgr, aclMgr)
+	return api.NewRouterWithDeps(nil, nil, nil, nil, nil, nil, nil, nil, nil, netMgr, aclMgr)
 }
 
 func addAdminToken() string {

@@ -34,6 +34,8 @@ func appErrorStatus(code apperrors.ErrorCode) int {
 		return http.StatusForbidden
 	case apperrors.ErrInvalidInput:
 		return http.StatusBadRequest
+	case apperrors.ErrConflict:
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}

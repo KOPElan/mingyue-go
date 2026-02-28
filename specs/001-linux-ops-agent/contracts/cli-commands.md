@@ -1,4 +1,4 @@
-# CLI 命令契约（Phase 1–2）
+# CLI 命令契约（Phase 1–4 / SMB+NFS 拆分）
 
 本文件定义已实现的 CLI 命令的参数、输出字段与退出码约定，作为 CLI 行为的稳定契约。
 
@@ -262,6 +262,161 @@ mingyue process kill <pid> [--json]
 
 ---
 
+## mingyue disk
+
+磁盘与挂载管理命令组。
+
+### mingyue disk list
+
+列出当前所有挂载点（读取 `/proc/mounts`）。
+
+```sh
+mingyue disk list [--json]
+```
+
+**人类可读输出示例**
+
+```
+MOUNT POINT                    DEVICE                         FS TYPE     OPTIONS
+/                              /dev/sda1                      ext4        rw,relatime
+/mnt/data                      /dev/sdb1                      ext4        rw,relatime
+
+(2 mount(s) found)
+```
+
+**JSON 输出示例**
+
+```json
+{
+  "mounts": [
+    {
+      "device": "/dev/sda1",
+      "mount_point": "/",
+      "fs_type": "ext4",
+      "options": "rw,relatime",
+      "total": 0,
+      "used": 0,
+      "free": 0
+    }
+  ]
+}
+```
+
+**退出码**：`0` 成功；`1` 读取挂载表失败
+
+---
+
+### mingyue disk mount
+
+挂载文件系统。
+
+```sh
+mingyue disk mount --type <fstype> [--read-only] [--options <opts>] \
+  [--username <u>] [--password <p>] [--domain <d>] \
+  <source> <mountpoint> [--json]
+```
+
+| 标志 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--type` | string | `""` | 文件系统类型（`ext4`/`cifs`/`nfs`/`auto`） |
+| `--read-only` | bool | false | 只读挂载 |
+| `--options` | string | `""` | 附加挂载选项（逗号分隔，不含凭据） |
+| `--username` | string | `""` | CIFS 用户名（不记录到日志） |
+| `--password` | string | `""` | CIFS 密码（不记录到日志） |
+| `--domain` | string | `""` | CIFS 域（可选） |
+
+**人类可读输出**：`Mounted /dev/sdb1 at /mnt/data`
+
+**JSON 输出**：
+
+```json
+{
+  "source": "/dev/sdb1",
+  "mount_point": "/mnt/data",
+  "result": "mounted"
+}
+```
+
+**退出码**：`0` 成功；`1` 已挂载（CONFLICT）或挂载失败
+
+> `disk.mount` 操作均产生一条审计日志。
+
+---
+
+### mingyue disk umount
+
+卸载指定挂载点。
+
+```sh
+mingyue disk umount <mountpoint> [--json]
+```
+
+**人类可读输出**：`Unmounted /mnt/data`
+
+**JSON 输出**：
+
+```json
+{
+  "mount_point": "/mnt/data",
+  "result": "unmounted"
+}
+```
+
+**退出码**：`0` 成功；`1` 挂载点未挂载（NOT_FOUND）或卸载失败
+
+> `disk.umount` 操作均产生一条审计日志。
+
+---
+
+### mingyue disk smart
+
+查询块设备 SMART 健康信息（需 root 或 CAP_SYS_RAWIO，依赖 `smartmontools`）。
+
+```sh
+mingyue disk smart <device> [--json]
+```
+
+| 参数 | 说明 |
+|------|------|
+| `device` | 设备路径，如 `/dev/sda` 或简写 `sda` |
+
+**人类可读输出示例**
+
+```
+Device        : /dev/sda
+Model         : Samsung SSD 860 EVO 250GB
+Serial        : S3EVNX0K123456
+Health        : PASSED
+Temperature   : 26°C
+Power-On Hours: 8765 h
+```
+
+**JSON 输出示例**
+
+```json
+{
+  "device": "/dev/sda",
+  "model": "Samsung SSD 860 EVO 250GB",
+  "serial": "S3EVNX0K123456",
+  "health_ok": true,
+  "temperature_c": 26,
+  "power_on_hours": 8765
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `device` | string | 设备路径 |
+| `model` | string | 硬盘型号 |
+| `serial` | string | 序列号 |
+| `health_ok` | bool | SMART 自检是否通过 |
+| `temperature_c` | int | 当前温度（摄氏度） |
+| `power_on_hours` | uint64 | 累计通电时间（小时） |
+
+**退出码**：`0` 成功；`1` smartctl 未安装（NOT_FOUND）、权限不足（FORBIDDEN）或查询失败
+
+---
+
 ## 错误输出格式
 
 所有命令在 `--json` 模式下的错误信息统一写入 **stderr**，格式如下：
@@ -282,8 +437,631 @@ mingyue process kill <pid> [--json]
 
 | 错误码 | 含义 |
 |--------|------|
-| `NOT_FOUND` | 目标资源不存在（进程、文件、挂载点等） |
-| `FORBIDDEN` | 权限不足（缺少所需系统能力或角色） |
+| `NOT_FOUND` | 目标资源不存在（进程、文件、挂载点、smartctl 等） |
+| `FORBIDDEN` | 权限不足（缺少所需系统能力或角色）、路径穿越/越界 |
 | `UNAUTHORIZED` | 未提供有效认证令牌（API 模式）|
 | `INVALID_INPUT` | 参数格式或值无效 |
+| `CONFLICT` | 目标已存在或状态冲突（如重复挂载）|
 | `INTERNAL` | 内部错误（系统调用失败） |
+
+---
+
+## Phase 4 — mingyue file
+
+文件管理命令组。所有子命令均受 `--root` 标志约束，路径越界时返回 `FORBIDDEN` 错误。
+
+### 公共标志（file 命令组持久化标志）
+
+| 标志 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--root` | string | `/` | 将所有文件操作限制在该目录子树内（防止路径穿越） |
+
+> **安全建议**：在生产环境中始终设置 `--root` 为最小必要目录（如 `/var/lib/mingyue/data`），避免使用默认值 `/`。
+
+---
+
+### mingyue file list
+
+列出目录内容。
+
+```sh
+mingyue file list <path> [--root DIR] [--json]
+```
+
+**人类可读输出示例**
+
+```
+TYPE     SIZE         MODE         NAME
+file     200.0 KiB    -rw-r--r--   syslog
+dir      0 B          drwxr-xr-x   nginx
+```
+
+**JSON 输出示例**
+
+```json
+{
+  "path": "/var/log",
+  "entries": [
+    {
+      "name": "syslog",
+      "path": "/var/log/syslog",
+      "is_dir": false,
+      "size": 204800,
+      "mode": "-rw-r--r--",
+      "mod_time": "2026-02-27T06:00:00Z",
+      "owner": "0"
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `path` | string | 请求的目录路径 |
+| `entries` | array | 目录条目列表 |
+| `entries[].name` | string | 文件基名 |
+| `entries[].path` | string | 绝对路径 |
+| `entries[].is_dir` | bool | 是否为目录 |
+| `entries[].size` | int64 | 文件大小（字节） |
+| `entries[].mode` | string | 权限字符串 |
+| `entries[].mod_time` | RFC3339 string | 最后修改时间（UTC） |
+| `entries[].owner` | string | 属主 UID |
+| `entries[].unreadable` | bool | 若为 `true`，该条目不可读 |
+
+**退出码**：`0` 成功；`1` 目录不存在或路径越界
+
+---
+
+### mingyue file stat
+
+查看文件或目录元信息。
+
+```sh
+mingyue file stat <path> [--root DIR] [--json]
+```
+
+**人类可读输出示例**
+
+```
+Path    : /var/log/syslog
+Type    : file
+Size    : 200.0 KiB
+Mode    : -rw-r--r--
+ModTime : 2026-02-27T06:00:00Z
+Owner   : 0
+```
+
+**JSON 输出**：单个 FileEntry 对象（字段同 `file list` entries 条目）
+
+**退出码**：`0` 成功；`1` 路径不存在或越界
+
+---
+
+### mingyue file read
+
+打印文件内容（原始字节到标准输出；`--json` 模式下内容为字符串）。
+
+```sh
+mingyue file read <path> [--root DIR] [--json]
+```
+
+**人类可读输出**：文件内容直接写入 stdout
+
+**JSON 输出示例**
+
+```json
+{
+  "path": "/var/log/syslog",
+  "content": "Feb 27 06:00:00 host kernel: ..."
+}
+```
+
+**退出码**：`0` 成功；`1` 文件不存在或越界
+
+---
+
+### mingyue file mkdir
+
+创建目录（含所有不存在的父级目录）。
+
+```sh
+mingyue file mkdir <path> [--root DIR] [--json]
+```
+
+**人类可读输出**：`Directory created: /tmp/mydir`
+
+**JSON 输出示例**
+
+```json
+{ "path": "/tmp/mydir", "result": "created" }
+```
+
+**退出码**：`0` 成功；`1` 失败
+
+---
+
+### mingyue file rm
+
+删除文件或目录。
+
+```sh
+mingyue file rm <path> [-r] [--root DIR] [--json]
+```
+
+| 标志 | 说明 |
+|------|------|
+| `-r, --recursive` | 递归删除目录及其所有内容 |
+
+**人类可读输出**：`Removed: /tmp/mydir`
+
+**JSON 输出示例**
+
+```json
+{ "path": "/tmp/mydir", "result": "removed" }
+```
+
+**退出码**：`0` 成功；`1` 路径不存在或越界
+
+---
+
+### mingyue file mv
+
+移动（重命名）文件或目录。
+
+```sh
+mingyue file mv <src> <dst> [--root DIR] [--json]
+```
+
+**人类可读输出**：`Moved: /tmp/old.txt → /tmp/new.txt`
+
+**JSON 输出示例**
+
+```json
+{ "src": "/tmp/old.txt", "dst": "/tmp/new.txt", "result": "moved" }
+```
+
+**退出码**：`0` 成功；`1` 源不存在或越界
+
+---
+
+### mingyue file cp
+
+复制文件。
+
+```sh
+mingyue file cp <src> <dst> [--root DIR] [--json]
+```
+
+**人类可读输出**：`Copied: /tmp/a.txt → /tmp/b.txt`
+
+**JSON 输出示例**
+
+```json
+{ "src": "/tmp/a.txt", "dst": "/tmp/b.txt", "result": "copied" }
+```
+
+**退出码**：`0` 成功；`1` 源不存在或越界
+
+---
+
+### mingyue file write
+
+将内容写入文件（不存在则创建，已存在则覆盖）。
+
+```sh
+mingyue file write <path> --content <text> [--root DIR] [--json]
+```
+
+| 标志 | 说明 |
+|------|------|
+| `--content` | 要写入的文本内容 |
+
+**人类可读输出**：`Written: /tmp/hello.txt`
+
+**JSON 输出示例**
+
+```json
+{ "path": "/tmp/hello.txt", "result": "written" }
+```
+
+**退出码**：`0` 成功；`1` 失败（权限不足、路径越界等）
+
+---
+
+## Phase 4 — mingyue share *(已弃用)*
+
+> **已弃用**：请改用协议专属命令 `mingyue smb` 或 `mingyue nfs`。
+> 运行任何 `share` 子命令时，系统会自动打印弃用提示。
+
+共享配置持久化至 `/var/lib/mingyue/shares.json`，进程重启后自动恢复。
+
+子命令（`list`、`get`、`create`、`update`、`delete`）语义与下文 `smb`/`nfs` 对应命令相同，但 `create`/`update` 须通过 `--type smb|nfs` 明确指定协议类型。
+
+---
+
+## Phase 4 — mingyue smb
+
+Samba (SMB/CIFS) 共享管理与用户管理命令组。
+
+> 共享配置持久化至 `/var/lib/mingyue/shares.json`。
+> `create`/`update`/`delete` 操作会自动重新生成 `/etc/samba/smb.conf.d/mingyue.conf` 并触发 `smbcontrol all reload-config`。
+> 一次性前置操作：在 `/etc/samba/smb.conf` 中添加 `include = /etc/samba/smb.conf.d/mingyue.conf`。
+
+---
+
+### mingyue smb list
+
+列出所有 Samba 共享。
+
+```sh
+mingyue smb list [--json]
+```
+
+**人类可读输出示例**
+
+```
+NAME                 ENABLED   PATH
+myshare              yes       /srv/myshare
+data                 yes       /data
+```
+
+**JSON 输出示例**
+
+```json
+{
+  "shares": [
+    {
+      "name": "myshare",
+      "type": "smb",
+      "path": "/srv/myshare",
+      "comment": "",
+      "read_only": false,
+      "enabled": true,
+      "valid_users": "alice @staff",
+      "write_list": "alice",
+      "create_mask": "0644",
+      "directory_mask": "0755"
+    }
+  ]
+}
+```
+
+**退出码**：`0` 成功；`1` 失败
+
+---
+
+### mingyue smb get
+
+查看指定 Samba 共享的详情。
+
+```sh
+mingyue smb get <name> [--json]
+```
+
+**人类可读输出示例**
+
+```
+Name          : myshare
+Path          : /srv/myshare
+Comment       :
+ReadOnly      : false
+Enabled       : true
+ValidUsers    : alice @staff
+WriteList     : alice
+CreateMask    : 0644
+DirectoryMask : 0755
+```
+
+**JSON 输出**：单个 Share 对象（字段同 `smb list` shares[] 条目）
+
+**退出码**：`0` 成功；`1` 共享不存在
+
+---
+
+### mingyue smb create
+
+创建新的 Samba 共享。
+
+```sh
+mingyue smb create <name> --path <dir> [--comment TEXT]
+                          [--read-only] [--enabled]
+                          [--valid-users USERS] [--write-list USERS]
+                          [--create-mask MASK] [--dir-mask MASK]
+                          [--json]
+```
+
+| 标志 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--path` | string | — | 本地共享目录（**必填**） |
+| `--comment` | string | `""` | 可选描述 |
+| `--read-only` | bool | `false` | 是否只读导出 |
+| `--enabled` | bool | `true` | 是否立即启用 |
+| `--valid-users` | string | `""` | 允许连接的用户或 `@组`（空表示所有认证用户） |
+| `--write-list` | string | `""` | 拥有写权限的用户或 `@组` |
+| `--create-mask` | string | `""` | 新建文件权限掩码（如 `0644`） |
+| `--dir-mask` | string | `""` | 新建目录权限掩码（如 `0755`） |
+
+**人类可读输出**：`Samba share created: myshare`
+
+**JSON 输出示例**
+
+```json
+{ "name": "myshare", "result": "created" }
+```
+
+**退出码**：`0` 成功；`1` 校验失败、名称已存在（`CONFLICT`）或服务重载失败
+
+---
+
+### mingyue smb update
+
+更新已有 Samba 共享。
+
+```sh
+mingyue smb update <name> --path <dir> [标志同 smb create]
+```
+
+所有字段均以提供值替换。`--path` 为必填。
+
+**人类可读输出**：`Samba share updated: myshare`
+
+**JSON 输出示例**
+
+```json
+{ "name": "myshare", "result": "updated" }
+```
+
+**退出码**：`0` 成功；`1` 共享不存在、校验失败或重载失败
+
+---
+
+### mingyue smb delete
+
+删除指定 Samba 共享。
+
+```sh
+mingyue smb delete <name> [--json]
+```
+
+**人类可读输出**：`Samba share deleted: myshare`
+
+**JSON 输出示例**
+
+```json
+{ "name": "myshare", "result": "deleted" }
+```
+
+**退出码**：`0` 成功；`1` 共享不存在或重载失败
+
+---
+
+### mingyue smb user list
+
+列出所有 Samba 用户（来自 Samba 密码数据库 tdbsam）。
+
+```sh
+mingyue smb user list [--json]
+```
+
+**人类可读输出示例**
+
+```
+alice
+bob
+```
+
+**JSON 输出示例**
+
+```json
+{ "users": [{ "username": "alice" }, { "username": "bob" }] }
+```
+
+**退出码**：`0` 成功；`1` 失败（pdbedit 不可用等）
+
+---
+
+### mingyue smb user add
+
+将 Linux 用户添加到 Samba 数据库并设置初始密码（从 stdin 读取）。
+
+```sh
+echo "password" | mingyue smb user add <username> [--json]
+```
+
+Linux 系统账号必须已存在才能添加为 Samba 用户。
+
+**人类可读输出**：`Samba user added: alice`
+
+**JSON 输出示例**
+
+```json
+{ "username": "alice", "result": "added" }
+```
+
+**退出码**：`0` 成功；`1` 用户不存在、密码未提供或命令失败
+
+---
+
+### mingyue smb user remove
+
+从 Samba 数据库删除用户。
+
+```sh
+mingyue smb user remove <username> [--json]
+```
+
+**人类可读输出**：`Samba user removed: alice`
+
+**JSON 输出示例**
+
+```json
+{ "username": "alice", "result": "removed" }
+```
+
+**退出码**：`0` 成功；`1` 用户不存在或命令失败
+
+---
+
+### mingyue smb user passwd
+
+修改 Samba 用户密码（从 stdin 读取）。
+
+```sh
+echo "newpassword" | mingyue smb user passwd <username> [--json]
+```
+
+**人类可读输出**：`Samba password updated for: alice`
+
+**JSON 输出示例**
+
+```json
+{ "username": "alice", "result": "password updated" }
+```
+
+**退出码**：`0` 成功；`1` 用户不存在、密码未提供或命令失败
+
+---
+
+## Phase 4 — mingyue nfs
+
+NFS (Network File System) 导出管理命令组。
+
+> 导出配置持久化至 `/var/lib/mingyue/shares.json`。
+> `create`/`update`/`delete` 操作会自动重新生成 `/etc/exports.d/mingyue.exports` 并触发 `exportfs -ra`。
+> 前置条件：确保 `/etc/exports.d/` 被 `/etc/exports` 包含（多数发行版默认已配置）。
+
+---
+
+### mingyue nfs list
+
+列出所有 NFS 导出。
+
+```sh
+mingyue nfs list [--json]
+```
+
+**人类可读输出示例**
+
+```
+NAME                 ENABLED   HOSTS             PATH
+nfsdata              yes       *                 /data/nfs
+restricted           yes       192.168.1.0/24    /srv/data
+```
+
+**JSON 输出示例**
+
+```json
+{
+  "exports": [
+    {
+      "name": "nfsdata",
+      "type": "nfs",
+      "path": "/data/nfs",
+      "comment": "",
+      "read_only": false,
+      "enabled": true,
+      "hosts": ""
+    }
+  ]
+}
+```
+
+**退出码**：`0` 成功；`1` 失败
+
+---
+
+### mingyue nfs get
+
+查看指定 NFS 导出的详情。
+
+```sh
+mingyue nfs get <name> [--json]
+```
+
+**人类可读输出示例**
+
+```
+Name     : nfsdata
+Path     : /data/nfs
+Comment  :
+ReadOnly : false
+Enabled  : true
+Hosts    : *
+```
+
+**JSON 输出**：单个 Share 对象（含 `hosts` 字段）
+
+**退出码**：`0` 成功；`1` 导出不存在
+
+---
+
+### mingyue nfs create
+
+创建新的 NFS 导出。
+
+```sh
+mingyue nfs create <name> --path <dir> [--comment TEXT]
+                          [--read-only] [--enabled]
+                          [--hosts "HOST1 HOST2"]
+                          [--json]
+```
+
+| 标志 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--path` | string | — | 本地导出目录（**必填**） |
+| `--comment` | string | `""` | 可选描述 |
+| `--read-only` | bool | `false` | 是否只读导出 |
+| `--enabled` | bool | `true` | 是否立即启用 |
+| `--hosts` | string | `""` | 空格分隔的主机/CIDR（空表示 `*` 全部允许） |
+
+**人类可读输出**：`NFS export created: nfsdata`
+
+**JSON 输出示例**
+
+```json
+{ "name": "nfsdata", "result": "created" }
+```
+
+**退出码**：`0` 成功；`1` 校验失败、名称已存在（`CONFLICT`）或服务重载失败
+
+---
+
+### mingyue nfs update
+
+更新已有 NFS 导出。
+
+```sh
+mingyue nfs update <name> --path <dir> [标志同 nfs create]
+```
+
+所有字段均以提供值替换。`--path` 为必填。
+
+**人类可读输出**：`NFS export updated: nfsdata`
+
+**JSON 输出示例**
+
+```json
+{ "name": "nfsdata", "result": "updated" }
+```
+
+**退出码**：`0` 成功；`1` 导出不存在、校验失败或重载失败
+
+---
+
+### mingyue nfs delete
+
+删除指定 NFS 导出。
+
+```sh
+mingyue nfs delete <name> [--json]
+```
+
+**人类可读输出**：`NFS export deleted: nfsdata`
+
+**JSON 输出示例**
+
+```json
+{ "name": "nfsdata", "result": "deleted" }
+```
+
+**退出码**：`0` 成功；`1` 导出不存在或重载失败

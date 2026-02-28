@@ -18,4 +18,7 @@ type FileEntry struct {
 	ModTime time.Time `json:"mod_time"`
 	// Owner is the owning user name.
 	Owner string `json:"owner"`
+	// Unreadable is true when the entry's metadata could not be retrieved
+	// (e.g. a permission error or race condition).  Other fields may be empty.
+	Unreadable bool `json:"unreadable,omitempty"`
 }
