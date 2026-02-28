@@ -1,4 +1,4 @@
-# CLI 命令契约（Phase 1–5）
+# CLI 命令契约（Phase 1–6）
 
 本文件定义已实现的 CLI 命令的参数、输出字段与退出码约定，作为 CLI 行为的稳定契约。
 
@@ -414,6 +414,114 @@ Power-On Hours: 8765 h
 | `power_on_hours` | uint64 | 累计通电时间（小时） |
 
 **退出码**：`0` 成功；`1` smartctl 未安装（NOT_FOUND）、权限不足（FORBIDDEN）或查询失败
+
+---
+
+### mingyue disk devices
+
+列出系统上所有块设备（含未挂载设备，依赖 `lsblk`）。
+
+```sh
+mingyue disk devices [--json]
+```
+
+**人类可读输出示例**
+
+```
+NAME         TYPE     SIZE         MOUNT POINT                    MODEL                     RM
+sda          disk     500.1 GiB                                   Samsung SSD 860 EVO 500GB false
+sda1         part     512.0 MiB    /boot                                                    false
+sda2         part     499.6 GiB    /                                                        false
+sdb          disk     2.0 TiB                                     WD Blue 2TB               false
+```
+
+**JSON 输出示例**
+
+```json
+{
+  "devices": [
+    {
+      "name": "sda",
+      "size_bytes": 500107862016,
+      "type": "disk",
+      "mount_point": "",
+      "model": "Samsung SSD 860 EVO 500GB",
+      "removable": false
+    },
+    {
+      "name": "sda1",
+      "size_bytes": 536870912,
+      "type": "part",
+      "mount_point": "/boot",
+      "removable": false
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string | 设备短名称（如 `sda`、`sda1`） |
+| `size_bytes` | uint64 | 设备大小（字节，0 表示未知） |
+| `type` | string | 设备类型：`disk`、`part`、`rom`、`loop` 等 |
+| `mount_point` | string | 当前挂载点（未挂载则为空） |
+| `model` | string | 设备型号（分区或虚拟设备可能为空） |
+| `removable` | bool | 是否为可移动设备（如 USB） |
+
+**退出码**：`0` 成功；`1` lsblk 未安装或查询失败
+
+---
+
+### mingyue disk power
+
+查询或设置块设备的电源/睡眠状态（依赖 `hdparm`，需要 root 或 `CAP_SYS_RAWIO`）。
+
+```sh
+mingyue disk power <device> [--standby | --sleep] [--json]
+```
+
+| 参数/标志 | 说明 |
+|----------|------|
+| `device` | 设备路径（如 `/dev/sda`）或简写（如 `sda`） |
+| `--standby` | 将磁盘置于待机模式（停转）|
+| `--sleep` | 将磁盘强制进入睡眠模式 |
+
+`--standby` 与 `--sleep` 互斥；不指定任何标志则仅查询当前电源模式。
+
+**人类可读输出示例（查询）**
+
+```
+Device    : /dev/sda
+Power Mode: active
+```
+
+**JSON 输出示例（查询）**
+
+```json
+{
+  "device": "/dev/sda",
+  "power_mode": "active"
+}
+```
+
+**JSON 输出示例（设置）**
+
+```json
+{
+  "device": "/dev/sda",
+  "action": "standby",
+  "result": "ok"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `device` | string | 设备路径 |
+| `power_mode` | string | 当前电源模式：`active`、`standby`、`sleeping`、`unknown` |
+
+**退出码**：`0` 成功；`1` hdparm 未安装（NOT_FOUND）、权限不足（FORBIDDEN）或操作失败
+
+> `disk.power set` 操作均产生一条审计日志。
 
 ---
 
@@ -1246,3 +1354,69 @@ mingyue acl set <path> --entry <spec> [--entry <spec> ...] [--root DIR] [--json]
 ```
 
 **退出码**：`0` 成功；`1` 路径越权、`setfacl` 未安装、权限不足或命令执行失败
+
+---
+
+## Phase 6：OpenAPI 规范 + 安装脚本
+
+Phase 6 不新增 CLI 子命令，其产出为 API 文档规范与系统服务安装能力。
+
+### OpenAPI 规范
+
+项目提供完整的 OpenAPI v3 规范文件，覆盖 v1 全量端点（含认证方式、请求/响应结构与错误结构）：
+
+```
+docs/api/openapi.yaml    # OpenAPI v3 规范（YAML 格式）
+```
+
+可使用任意 OpenAPI 工具加载该文件，例如：
+
+```sh
+# 使用 Swagger UI（Docker）本地预览
+docker run -p 8080:8080 -e SWAGGER_JSON=/api/openapi.yaml \
+  -v $(pwd)/docs/api:/api swaggerapi/swagger-ui
+
+# 使用 redoc-cli 本地预览
+npx @redocly/cli preview-docs docs/api/openapi.yaml
+
+# 使用 openapi-generator 生成客户端代码
+openapi-generator-cli generate -i docs/api/openapi.yaml \
+  -g python -o ./client-python
+```
+
+---
+
+### 安装为系统服务（systemd）
+
+使用提供的脚本将 `mingyue` 守护进程注册为 systemd 服务，实现开机自启。
+
+#### 安装
+
+```sh
+sudo bash scripts/install.sh
+```
+
+安装脚本执行步骤：
+1. 检测 systemd 环境（不满足则退出并提示）
+2. 将编译好的 `mingyue` 二进制复制到 `/usr/local/bin/mingyue`
+3. 创建运行时目录（`/etc/mingyue`、`/var/lib/mingyue`、`/var/log/mingyue`）
+4. 写入 `/etc/systemd/system/mingyue.service` unit 文件
+5. 执行 `systemctl daemon-reload && systemctl enable --now mingyue`
+
+**验证安装**
+
+```sh
+systemctl status mingyue
+curl http://localhost:7070/api/v1/health
+```
+
+#### 卸载
+
+```sh
+sudo bash scripts/uninstall.sh          # 卸载服务，保留数据目录
+sudo bash scripts/uninstall.sh --purge  # 卸载服务并删除所有数据目录
+```
+
+`--purge` 选项额外删除：`/etc/mingyue`、`/var/lib/mingyue`、`/var/log/mingyue`。
+
+**退出码**：`0` 成功；`1` 非 root 运行、systemd 不可用或命令执行失败
