@@ -58,8 +58,10 @@ if [ -z "$BINARY_SRC" ]; then
   if ! command -v go &>/dev/null; then
     die "go is required to build the binary. Install Go or provide the binary path as the first argument."
   fi
-  go build -o "/tmp/${BINARY_NAME}" ./cmd/mingyue
-  BINARY_SRC="/tmp/${BINARY_NAME}"
+  TMP_BUILD_DIR="$(mktemp -d -t mingyue-build-XXXXXXXX)" || die "Failed to create temporary build directory."
+  trap 'rm -rf "$TMP_BUILD_DIR"' EXIT
+  go build -o "$TMP_BUILD_DIR/${BINARY_NAME}" ./cmd/mingyue
+  BINARY_SRC="$TMP_BUILD_DIR/${BINARY_NAME}"
   log "Built binary: $BINARY_SRC"
 fi
 
@@ -104,8 +106,8 @@ SyslogIdentifier=${SERVICE_NAME}
 
 # Hardening (best-effort; override in /etc/systemd/system/${SERVICE_NAME}.service.d/)
 ProtectSystem=full
-ReadWritePaths=${DATA_DIR} ${LOG_DIR} /run
-NoNewPrivileges=false
+ReadWritePaths=${DATA_DIR} ${LOG_DIR} /run /etc/samba/smb.conf.d /etc/exports.d /var/lib/samba
+NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]

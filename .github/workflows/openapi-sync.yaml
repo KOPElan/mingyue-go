@@ -17,8 +17,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
       - name: Install Redocly CLI
-        run: npm install -g @redocly/cli@latest
+        run: npm install -g @redocly/cli@1.18.0
 
       - name: Lint OpenAPI spec
         run: redocly lint docs/api/openapi.yaml
@@ -44,39 +50,38 @@ jobs:
 
       - name: Check key endpoints are documented
         run: |
-          SPEC=docs/api/openapi.yaml
-          MISSING=()
+          python3 - <<'PYEOF'
+          import sys
+          import yaml
 
-          # Core endpoints that must always be present in the spec
-          REQUIRED_PATHS=(
-            "/api/v1/health"
-            "/api/v1/version"
-            "/api/v1/system/overview"
-            "/api/v1/processes"
-            "/api/v1/files"
-            "/api/v1/shares"
-            "/api/v1/smb/shares"
-            "/api/v1/nfs/exports"
-            "/api/v1/disks/mounts"
-            "/api/v1/disks/devices"
-            "/api/v1/network/interfaces"
-            "/api/v1/acl"
-          )
+          REQUIRED_PATHS = [
+            "/api/v1/health",
+            "/api/v1/version",
+            "/api/v1/system/overview",
+            "/api/v1/processes",
+            "/api/v1/files",
+            "/api/v1/shares",
+            "/api/v1/smb/shares",
+            "/api/v1/nfs/exports",
+            "/api/v1/disks/mounts",
+            "/api/v1/disks/devices",
+            "/api/v1/network/interfaces",
+            "/api/v1/acl",
+          ]
 
-          for path in "${REQUIRED_PATHS[@]}"; do
-            if ! grep -qF "\"$path\"" "$SPEC" && ! grep -qF "'$path'" "$SPEC" && ! grep -q "^  $path:" "$SPEC"; then
-              MISSING+=("$path")
-            fi
-          done
+          with open("docs/api/openapi.yaml") as f:
+            spec = yaml.safe_load(f)
 
-          if [ ${#MISSING[@]} -gt 0 ]; then
-            echo "ERROR: The following required API paths are missing from docs/api/openapi.yaml:"
-            for m in "${MISSING[@]}"; do
-              echo "  - $m"
-            done
-            echo ""
-            echo "Please update docs/api/openapi.yaml to document all API endpoints."
-            exit 1
-          fi
+          documented = set(spec.get("paths", {}).keys())
+          missing = [p for p in REQUIRED_PATHS if p not in documented]
 
-          echo "All required API paths are documented in docs/api/openapi.yaml."
+          if missing:
+            print("ERROR: The following required API paths are missing from docs/api/openapi.yaml:")
+            for m in missing:
+              print(f"  - {m}")
+            print()
+            print("Please update docs/api/openapi.yaml to document all API endpoints.")
+            sys.exit(1)
+
+          print(f"All {len(REQUIRED_PATHS)} required API paths are documented in docs/api/openapi.yaml.")
+          PYEOF

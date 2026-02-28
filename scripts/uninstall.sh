@@ -36,6 +36,12 @@ if [ "$(id -u)" -ne 0 ]; then
   die "This script must be run as root (or with sudo)."
 fi
 
+# ── Detect systemd ───────────────────────────────────────────────────────────
+
+if ! command -v systemctl &>/dev/null; then
+  die "systemd is required but not found. Cannot uninstall a service in a non-systemd environment."
+fi
+
 # ── Stop and disable service ──────────────────────────────────────────────────
 
 if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then

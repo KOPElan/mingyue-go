@@ -47,7 +47,10 @@ components:
     BearerAuth:
       type: http
       scheme: bearer
-      description: API key registered via `auth.RegisterAPIKey()` at daemon startup.
+      description: >
+        Bearer token 对应的 API key 需要在 daemon 启动代码中通过
+        `auth.RegisterAPIKey()` 在进程内显式注册。当前默认启动路径不会自动加载或注册
+        任何 key，未注册时所有受保护接口将返回 401。
 
   schemas:
     ErrorResponse:
@@ -249,7 +252,7 @@ components:
 
     Share:
       type: object
-      required: [name, type, path, read_only, enabled, valid_users, write_list, create_mask, directory_mask, hosts]
+      required: [name, type, path, read_only, enabled]
       properties:
         name:
           type: string
@@ -593,7 +596,7 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
           example:
             code: UNAUTHORIZED
-            message: "missing or invalid bearer token"
+            message: "authentication required"
     Forbidden:
       description: Insufficient permissions for the requested operation
       content:
