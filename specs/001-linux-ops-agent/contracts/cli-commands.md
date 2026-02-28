@@ -1,4 +1,4 @@
-# CLI 命令契约（Phase 1–4 / SMB+NFS 拆分）
+# CLI 命令契约（Phase 1–5）
 
 本文件定义已实现的 CLI 命令的参数、输出字段与退出码约定，作为 CLI 行为的稳定契约。
 
@@ -1065,3 +1065,184 @@ mingyue nfs delete <name> [--json]
 ```
 
 **退出码**：`0` 成功；`1` 导出不存在或重载失败
+
+---
+
+## Phase 5：网络管理 + 权限/ACL
+
+### mingyue network
+
+网络接口管理命令组。
+
+#### mingyue network list
+
+列出所有网络接口。
+
+```sh
+mingyue network list [--json]
+```
+
+**人类可读输出示例**
+
+```
+NAME                 INDEX    FLAGS                 ADDRESSES
+lo                   1        LOOPBACK,UP           127.0.0.1/8
+eth0                 2        UP,BROADCAST,MULTICAST 192.168.1.10/24, fe80::1/64
+```
+
+**JSON 输出示例**
+
+```json
+{
+  "interfaces": [
+    {
+      "name": "lo",
+      "index": 1,
+      "flags": ["UP", "LOOPBACK"],
+      "mtu": 65536,
+      "addresses": [{ "ip": "127.0.0.1", "prefix": 8, "family": "ipv4" }]
+    }
+  ]
+}
+```
+
+**退出码**：`0` 成功；`1` 系统调用失败
+
+---
+
+#### mingyue network get \<name\>
+
+查询单个网络接口详情。
+
+```sh
+mingyue network get <name> [--json]
+```
+
+**人类可读输出示例**
+
+```
+Name    : eth0
+Index   : 2
+MTU     : 1500
+HWAddr  : 52:54:00:ab:cd:ef
+Flags   : UP, BROADCAST, MULTICAST
+Addresses:
+  192.168.1.10/24 (ipv4)
+  fe80::1/64 (ipv6)
+```
+
+**JSON 输出**：单个接口对象（同 `list` 中 `interfaces[]` 条目结构）
+
+**退出码**：`0` 成功；`1` 接口不存在或系统调用失败
+
+---
+
+#### mingyue network up \<name\>
+
+启用网络接口（需要 root 或 `CAP_NET_ADMIN`）。
+
+```sh
+mingyue network up <name> [--json]
+```
+
+**人类可读输出**：`Interface eth0 is now up`
+
+**JSON 输出**：`{"interface":"eth0","result":"up"}`
+
+**退出码**：`0` 成功；`1` 权限不足或命令执行失败
+
+---
+
+#### mingyue network down \<name\>
+
+禁用网络接口（需要 root 或 `CAP_NET_ADMIN`）。
+
+```sh
+mingyue network down <name> [--json]
+```
+
+**人类可读输出**：`Interface eth0 is now down`
+
+**JSON 输出**：`{"interface":"eth0","result":"down"}`
+
+**退出码**：`0` 成功；`1` 权限不足或命令执行失败
+
+---
+
+#### mingyue network dhcp \<name\>
+
+刷新接口的 DHCP 租约（优先尝试 `dhclient`，备选 `dhcpcd`）。
+需要 root 或 `CAP_NET_ADMIN`。
+
+```sh
+mingyue network dhcp <name> [--json]
+```
+
+**人类可读输出**：`DHCP lease renewed on eth0`
+
+**JSON 输出**：`{"interface":"eth0","result":"dhcp-renewed"}`
+
+**退出码**：`0` 成功；`1` 两种 DHCP 客户端均失败或权限不足
+
+---
+
+### mingyue acl
+
+文件权限与 POSIX ACL 管理命令组。
+
+所有操作均受 `--root` 根目录约束，防止路径穿越。
+
+| 标志 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--root` | string | `/` | 约束所有 ACL 操作的根目录 |
+
+#### mingyue acl get \<path\>
+
+查询文件或目录的权限与 POSIX ACL 条目。
+
+```sh
+mingyue acl get <path> [--root DIR] [--json]
+```
+
+**人类可读输出示例**
+
+```
+Path  : /srv/data
+Owner : 1000
+Group : 1000
+Mode  : drwxr-xr-x
+ACL Entries:
+  user::rwx
+  group::r-x
+  user:alice:rwx
+  mask::rwx
+  other::r--
+```
+
+**JSON 输出**：`ACLInfo` 对象（含 `path`、`owner`、`group`、`mode`、`acl_entries`）
+
+**退出码**：`0` 成功；`1` 路径不存在、路径越权或系统调用失败
+
+---
+
+#### mingyue acl set \<path\>
+
+设置文件或目录的 POSIX ACL 条目（需要安装 `setfacl`，以及写权限）。
+
+```sh
+mingyue acl set <path> --entry <spec> [--entry <spec> ...] [--root DIR] [--json]
+```
+
+| 标志 | 类型 | 说明 |
+|------|------|------|
+| `--entry` | string（可重复） | ACL 规格字符串，格式 `type:qualifier:perms`（如 `u:alice:rwx`） |
+
+**人类可读输出**：`ACL updated: /srv/data`
+
+**JSON 输出示例**
+
+```json
+{ "path": "/srv/data", "entries": ["u:alice:rwx", "g:devs:r-x"], "result": "set" }
+```
+
+**退出码**：`0` 成功；`1` 路径越权、`setfacl` 未安装、权限不足或命令执行失败

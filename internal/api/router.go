@@ -8,8 +8,10 @@ import (
 
 	"kopelan/mingyue-go/internal/api/middleware"
 	"kopelan/mingyue-go/internal/audit"
+	aclService "kopelan/mingyue-go/internal/service/acl"
 	diskService "kopelan/mingyue-go/internal/service/disk"
 	fileService "kopelan/mingyue-go/internal/service/file"
+	netService "kopelan/mingyue-go/internal/service/network"
 	procService "kopelan/mingyue-go/internal/service/process"
 	shareService "kopelan/mingyue-go/internal/service/share"
 	sysService "kopelan/mingyue-go/internal/service/system"
@@ -46,9 +48,11 @@ func NewRouter() *Router {
 	fileMgr := fileService.NewManager("", auditLogger)
 	shareMgr := shareService.NewManager(auditLogger)
 	sambaUserMgr := shareService.NewSambaUserManager()
+	netMgr := netService.NewManager(auditLogger)
+	aclMgr := aclService.NewManager("", auditLogger)
 
 	return &Router{
-		Handler:     NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr, sambaUserMgr),
+		Handler:     NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr, sambaUserMgr, netMgr, aclMgr),
 		auditLogger: auditLogger,
 	}
 }
@@ -65,6 +69,8 @@ func NewRouterWithDeps(
 	fileMgr *fileService.Manager,
 	shareMgr *shareService.Manager,
 	sambaUserMgr *shareService.SambaUserManager,
+	netMgr *netService.Manager,
+	aclMgr *aclService.Manager,
 ) http.Handler {
 	mux := http.NewServeMux()
 
@@ -121,6 +127,21 @@ func NewRouterWithDeps(
 
 	// Subtree: GET /api/v1/disks/{device}/smart and GET/POST /api/v1/disks/{device}/power.
 	mux.Handle("/api/v1/disks/", auth(diskDeviceHandler(smartSvc, powerSvc)))
+
+	// ── Network routes ────────────────────────────────────────────────────
+	if netMgr != nil {
+		// Exact: GET all interfaces.
+		mux.Handle("/api/v1/network/interfaces", auth(networkInterfacesHandler(netMgr)))
+		// Subtree: GET /api/v1/network/interfaces/{name} and
+		//          PUT /api/v1/network/interfaces/{name} (up/down/dhcp).
+		mux.Handle("/api/v1/network/interfaces/", auth(networkInterfaceDispatchHandler(netMgr)))
+	}
+
+	// ── ACL routes ────────────────────────────────────────────────────────
+	if aclMgr != nil {
+		// GET (query) and PUT (set) on /api/v1/acl.
+		mux.Handle("/api/v1/acl", auth(aclRootHandler(aclMgr)))
+	}
 
 	return mux
 }

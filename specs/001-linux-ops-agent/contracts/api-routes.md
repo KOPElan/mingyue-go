@@ -1,4 +1,4 @@
-# HTTP API 路由契约（Phase 1–4 / SMB+NFS 拆分）
+# HTTP API 路由契约（Phase 1–5）
 
 本文件定义已实现的 HTTP API 端点的请求/响应结构与错误约定，作为 API 行为的稳定契约。
 
@@ -1195,3 +1195,183 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 | 403 | `FORBIDDEN` | 角色不足（viewer） |
 | 404 | `NOT_FOUND` | 导出不存在 |
 | 500 | `INTERNAL` | 删除或重载失败 |
+
+---
+
+## Phase 5：网络管理 + 权限/ACL
+
+### GET /api/v1/network/interfaces
+
+列出所有网络接口。**任何已认证角色**均可访问。
+
+**请求**：无参数
+
+**响应 200**
+
+```json
+{
+  "interfaces": [
+    {
+      "name": "eth0",
+      "index": 2,
+      "flags": ["UP", "BROADCAST", "MULTICAST"],
+      "mtu": 1500,
+      "hardware_addr": "52:54:00:ab:cd:ef",
+      "addresses": [
+        { "ip": "192.168.1.10", "prefix": 24, "family": "ipv4" },
+        { "ip": "fe80::1", "prefix": 64, "family": "ipv6" }
+      ]
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `interfaces` | array | 网络接口列表 |
+| `interfaces[].name` | string | 接口名称 |
+| `interfaces[].index` | int | OS 分配的接口编号 |
+| `interfaces[].flags` | array\<string\> | 接口标志，如 `UP`、`BROADCAST`、`LOOPBACK` |
+| `interfaces[].mtu` | int | 最大传输单元（字节） |
+| `interfaces[].hardware_addr` | string | MAC 地址，虚拟/回环接口为空 |
+| `interfaces[].addresses` | array | 单播地址列表 |
+| `interfaces[].addresses[].ip` | string | IP 地址 |
+| `interfaces[].addresses[].prefix` | int | CIDR 前缀长度 |
+| `interfaces[].addresses[].family` | string | `"ipv4"` 或 `"ipv6"` |
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 500 | `INTERNAL` | 系统调用失败 |
+
+---
+
+### GET /api/v1/network/interfaces/{name}
+
+查询单个网络接口详情。**任何已认证角色**均可访问。
+
+**路径参数**：`name` — 接口名称（如 `eth0`、`lo`）
+
+**响应 200**：同上述 `interfaces[]` 单条记录结构
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 404 | `NOT_FOUND` | 接口不存在 |
+| 500 | `INTERNAL` | 系统调用失败 |
+
+---
+
+### PUT /api/v1/network/interfaces/{name}
+
+对指定接口执行变更操作（启用/禁用/刷新 DHCP）。**需要 `admin` 角色**。
+
+**路径参数**：`name` — 接口名称
+
+**请求体**
+
+```json
+{ "action": "up" }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `action` | string | 是 | `"up"`（启用）、`"down"`（禁用）、`"dhcp"`（刷新 DHCP 租约） |
+
+**响应 204**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | `action` 值无效或请求体格式错误 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（非 admin） |
+| 500 | `INTERNAL` | 系统命令执行失败 |
+
+---
+
+### GET /api/v1/acl
+
+查询文件或目录的权限与 POSIX ACL 条目。**任何已认证角色**均可访问。
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `path` | string | 是 | 目标文件或目录的绝对路径 |
+
+**响应 200**
+
+```json
+{
+  "path": "/srv/data",
+  "owner": "1000",
+  "group": "1000",
+  "mode": "drwxr-xr-x",
+  "acl_entries": [
+    { "type": "user",  "qualifier": "",      "permissions": "rwx" },
+    { "type": "group", "qualifier": "",      "permissions": "r-x" },
+    { "type": "user",  "qualifier": "alice", "permissions": "rwx" },
+    { "type": "mask",  "qualifier": "",      "permissions": "rwx" },
+    { "type": "other", "qualifier": "",      "permissions": "r--" }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `path` | string | 目标路径（绝对路径） |
+| `owner` | string | 所有者 UID（或名称） |
+| `group` | string | 所有者组 GID（或名称） |
+| `mode` | string | Unix 权限字符串 |
+| `acl_entries` | array | POSIX ACL 条目；未安装 getfacl 时为空数组 |
+| `acl_entries[].type` | string | `"user"`、`"group"`、`"mask"`、`"other"` |
+| `acl_entries[].qualifier` | string | 用户名或组名；空字符串表示所有者用户/组 |
+| `acl_entries[].permissions` | string | 三字符权限串，如 `"rwx"`、`"r--"` |
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | `path` 参数缺失 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 路径越权（目录穿越或超出根目录） |
+| 404 | `NOT_FOUND` | 路径不存在 |
+| 500 | `INTERNAL` | 系统调用失败 |
+
+---
+
+### PUT /api/v1/acl
+
+设置文件或目录的 POSIX ACL 条目（调用 `setfacl`）。**需要 `operator` 或 `admin` 角色**。
+
+**请求体**
+
+```json
+{
+  "path": "/srv/data",
+  "entries": ["u:alice:rwx", "g:devs:r-x"]
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `path` | string | 是 | 目标文件或目录的绝对路径 |
+| `entries` | array\<string\> | 是 | ACL 规格列表，格式为 `"type:qualifier:perms"`（如 `"u:alice:rwx"`） |
+
+**响应 204**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | `path` 为空、`entries` 为空或请求体格式错误 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（viewer）或路径越权 |
+| 404 | `NOT_FOUND` | 路径不存在或 `setfacl` 未安装（含安装提示） |
+| 500 | `INTERNAL` | `setfacl` 执行失败 |
