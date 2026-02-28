@@ -1,4 +1,4 @@
-# HTTP API 路由契约（Phase 1–5）
+# HTTP API 路由契约（Phase 1–6）
 
 本文件定义已实现的 HTTP API 端点的请求/响应结构与错误约定，作为 API 行为的稳定契约。
 
@@ -399,6 +399,130 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 
 ---
 
+### GET /api/v1/disks/devices
+
+列出系统上所有块设备（含未挂载设备，调用 `lsblk`）。**需要 viewer 或以上角色**。
+
+**请求**：无参数
+
+**响应 200**
+
+```json
+{
+  "devices": [
+    {
+      "name": "sda",
+      "size_bytes": 500107862016,
+      "type": "disk",
+      "mount_point": "",
+      "model": "Samsung SSD 860 EVO 500GB",
+      "removable": false
+    },
+    {
+      "name": "sda1",
+      "size_bytes": 536870912,
+      "type": "part",
+      "mount_point": "/boot",
+      "removable": false
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `devices` | array | 块设备列表 |
+| `devices[].name` | string | 设备短名称（如 `sda`、`sda1`） |
+| `devices[].size_bytes` | uint64 | 设备大小（字节，0 表示未知） |
+| `devices[].type` | string | 设备类型：`disk`、`part`、`rom`、`loop` 等 |
+| `devices[].mount_point` | string | 当前挂载点（未挂载时省略或为空） |
+| `devices[].model` | string | 设备型号（分区或虚拟设备可能省略） |
+| `devices[].removable` | bool | 是否为可移动设备（如 USB） |
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 500 | `INTERNAL` | lsblk 未安装或命令执行失败 |
+
+---
+
+### GET /api/v1/disks/{device}/power
+
+查询指定设备的当前电源/睡眠状态（调用 `hdparm -C`）。**需要 viewer 或以上角色**。
+
+`{device}` 可以是设备短名称（如 `sda`）或 URL 编码的完整路径（如 `%2Fdev%2Fsda`）。
+
+**路径参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `device` | string | 设备名（如 `sda`）或 URL 编码的设备路径 |
+
+**响应 200**
+
+```json
+{
+  "device": "/dev/sda",
+  "power_mode": "active"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `device` | string | 设备路径 |
+| `power_mode` | string | 当前电源模式：`active`、`standby`、`sleeping`、`unknown` |
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 权限不足（需要 root 或 CAP_SYS_RAWIO）|
+| 404 | `NOT_FOUND` | hdparm 未安装（需安装 hdparm 工具包）|
+| 500 | `INTERNAL` | 命令执行失败 |
+
+---
+
+### POST /api/v1/disks/{device}/power
+
+设置指定设备的电源/睡眠状态。**需要 operator 或 admin 角色**。
+
+> 此操作产生一条审计日志（`action: "disk.power"`）。
+
+**路径参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `device` | string | 设备名（如 `sda`）或 URL 编码的设备路径 |
+
+**请求体**
+
+```json
+{
+  "action": "standby"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `action` | string | ✓ | 目标电源模式：`"standby"`（磁盘停转待机）或 `"sleep"`（强制睡眠） |
+
+**响应 204**：无响应体
+
+**错误响应**
+
+| HTTP 状态码 | 错误码 | 触发条件 |
+|-------------|--------|----------|
+| 400 | `INVALID_INPUT` | `action` 值无效或请求体格式错误 |
+| 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
+| 403 | `FORBIDDEN` | 角色不足（viewer）或权限不足（需要 root 或 CAP_SYS_RAWIO）|
+| 404 | `NOT_FOUND` | hdparm 未安装 |
+| 500 | `INTERNAL` | 命令执行失败 |
+
+---
+
 ## 审计日志
 
 以下端点在执行时向 `/var/log/mingyue/audit.log` 追加一条 JSON Lines 审计记录：
@@ -408,6 +532,7 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 | `DELETE /api/v1/processes/{pid}` | 成功或失败均记录 |
 | `POST /api/v1/disks/mounts` | 成功或失败均记录 |
 | `DELETE /api/v1/disks/mounts/{mountpoint}` | 成功或失败均记录 |
+| `POST /api/v1/disks/{device}/power` | 成功或失败均记录（`disk.power`）|
 | `POST /api/v1/files` | 成功或失败均记录（`file.mkdir` 或 `file.write`） |
 | `DELETE /api/v1/files` | 成功或失败均记录（`file.remove`） |
 | `PUT /api/v1/files/move` | 成功或失败均记录（`file.move`） |
@@ -1375,3 +1500,45 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 | 403 | `FORBIDDEN` | 角色不足（viewer）或路径越权 |
 | 404 | `NOT_FOUND` | 路径不存在或 `setfacl` 未安装（含安装提示） |
 | 500 | `INTERNAL` | `setfacl` 执行失败 |
+
+---
+
+## Phase 6：OpenAPI 规范 + CI 同步
+
+Phase 6 不新增 API 端点，其产出为机器可读的 API 文档规范与 CI 同步机制。
+
+### OpenAPI v3 规范文件
+
+项目提供完整的 OpenAPI v3 规范文件，覆盖 v1 全量端点：
+
+```
+docs/api/openapi.yaml    # OpenAPI v3 规范（YAML 格式）
+```
+
+规范文件包含：
+- 认证方式（Bearer Token）与角色说明
+- 所有端点的路径、HTTP 方法、请求参数与请求体
+- 响应结构（含成功响应与错误响应）
+- 可复用的 schema 组件（HostSnapshot、Process、Mount、FileEntry、Share、ACLInfo、BlockDevice、DiskPower 等）
+
+**快速预览**
+
+```sh
+# 使用 Swagger UI（Docker）本地预览
+docker run -p 8080:8080 -e SWAGGER_JSON=/api/openapi.yaml \
+  -v $(pwd)/docs/api:/api swaggerapi/swagger-ui
+
+# 使用 redoc-cli 本地预览
+npx @redocly/cli preview-docs docs/api/openapi.yaml
+
+# 使用 openapi-generator 生成客户端代码
+openapi-generator-cli generate -i docs/api/openapi.yaml \
+  -g python -o ./client-python
+```
+
+### CI 同步机制
+
+`.github/workflows/openapi-sync.yaml` 在 PR 合并时对 OpenAPI 规范执行自动校验：
+- 使用 `@stoplight/spectral-cli` 对 `docs/api/openapi.yaml` 执行 lint 校验
+- 检查规范文件是否包含关键路径覆盖（health、system/overview、disks/mounts、shares 等）
+- 任何 lint 失败或路径缺失均导致 CI 检查不通过，防止规范与实现发生漂移
