@@ -9,7 +9,9 @@ import (
 	"kopelan/mingyue-go/internal/api/middleware"
 	"kopelan/mingyue-go/internal/audit"
 	diskService "kopelan/mingyue-go/internal/service/disk"
+	fileService "kopelan/mingyue-go/internal/service/file"
 	procService "kopelan/mingyue-go/internal/service/process"
+	shareService "kopelan/mingyue-go/internal/service/share"
 	sysService "kopelan/mingyue-go/internal/service/system"
 )
 
@@ -41,9 +43,11 @@ func NewRouter() *Router {
 	smartSvc := diskService.NewSmartService()
 	powerSvc := diskService.NewPowerService(auditLogger)
 	devSvc := diskService.NewDeviceService()
+	fileMgr := fileService.NewManager("", auditLogger)
+	shareMgr := shareService.NewManager(auditLogger)
 
 	return &Router{
-		Handler:     NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc),
+		Handler:     NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr),
 		auditLogger: auditLogger,
 	}
 }
@@ -57,6 +61,8 @@ func NewRouterWithDeps(
 	smartSvc *diskService.SmartService,
 	powerSvc *diskService.PowerService,
 	devSvc *diskService.DeviceService,
+	fileMgr *fileService.Manager,
+	shareMgr *shareService.Manager,
 ) http.Handler {
 	mux := http.NewServeMux()
 
@@ -79,6 +85,14 @@ func NewRouterWithDeps(
 	// Process individual routes (get + kill share the /processes/{pid} prefix).
 	mux.Handle("/api/v1/processes/", auth(processDispatchHandler(procMgr)))
 
+	// ── File management routes ────────────────────────────────────────────
+	mux.Handle("/api/v1/files", auth(fileRootHandler(fileMgr)))
+	mux.Handle("/api/v1/files/", auth(fileDispatchHandler(fileMgr)))
+
+	// ── Share management routes ───────────────────────────────────────────
+	mux.Handle("/api/v1/shares", auth(shareRootHandler(shareMgr)))
+	mux.Handle("/api/v1/shares/", auth(shareDispatchHandler(shareMgr)))
+
 	// ── Disk / mount routes ───────────────────────────────────────────────
 
 	// Exact: GET all block devices (including unmounted) via lsblk.
@@ -95,6 +109,41 @@ func NewRouterWithDeps(
 	mux.Handle("/api/v1/disks/", auth(diskDeviceHandler(smartSvc, powerSvc)))
 
 	return mux
+}
+
+// fileRootHandler dispatches GET (list) and DELETE and POST on /api/v1/files.
+func fileRootHandler(mgr *fileService.Manager) http.Handler {
+	listH := fileListHandler(mgr)
+	writeH := fileWriteHandler(mgr)
+	deleteH := fileDeleteHandler(mgr)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			listH.ServeHTTP(w, r)
+		case http.MethodPost:
+			writeH.ServeHTTP(w, r)
+		case http.MethodDelete:
+			deleteH.ServeHTTP(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+}
+
+// shareRootHandler dispatches GET (list) and POST (create) on /api/v1/shares.
+func shareRootHandler(mgr *shareService.Manager) http.Handler {
+	listH := shareListHandler(mgr)
+	createH := shareCreateHandler(mgr)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			listH.ServeHTTP(w, r)
+		case http.MethodPost:
+			createH.ServeHTTP(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 }
 
 // processDispatchHandler routes requests to the per-PID handlers based on
