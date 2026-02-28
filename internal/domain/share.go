@@ -27,20 +27,20 @@ type Share struct {
 
 	// ValidUsers is a space/comma-separated list of users or @groups allowed
 	// to connect to this share.  An empty value means all authenticated users.
-	ValidUsers string `json:"valid_users,omitempty"`
+	ValidUsers string `json:"valid_users"`
 	// WriteList is a space/comma-separated list of users or @groups that are
 	// granted write access even when the share is read-only.
-	WriteList string `json:"write_list,omitempty"`
+	WriteList string `json:"write_list"`
 	// CreateMask is the octal permission mask applied to newly created files,
 	// e.g. "0644".  An empty value leaves the Samba default (0744) unchanged.
-	CreateMask string `json:"create_mask,omitempty"`
+	CreateMask string `json:"create_mask"`
 	// DirectoryMask is the octal permission mask applied to newly created
 	// directories, e.g. "0755".  An empty value leaves the Samba default unchanged.
-	DirectoryMask string `json:"directory_mask,omitempty"`
+	DirectoryMask string `json:"directory_mask"`
 
 	// ── NFS-specific fields (ignored for Samba shares) ────────────────────
 
 	// Hosts is a space-separated list of hostnames, IP addresses, or CIDR
 	// ranges that are allowed to mount the NFS export.  Defaults to "*" (all).
-	Hosts string `json:"hosts,omitempty"`
+	Hosts string `json:"hosts"`
 }

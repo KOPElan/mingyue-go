@@ -96,6 +96,16 @@ func nfsExportUpdateHandler(mgr *shareService.Manager) http.HandlerFunc {
 			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "export name is required"))
 			return
 		}
+		// Verify the existing resource is an NFS export before overwriting it.
+		existing, err := mgr.Get(r.Context(), name)
+		if err != nil {
+			writeAppError(w, err)
+			return
+		}
+		if existing.Type != domain.ShareTypeNFS {
+			writeAppError(w, apperrors.New(apperrors.ErrNotFound, "NFS export not found"))
+			return
+		}
 		var s domain.Share
 		if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
 			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "invalid JSON body"))
@@ -123,6 +133,16 @@ func nfsExportDeleteHandler(mgr *shareService.Manager) http.HandlerFunc {
 		name := nfsExportNameFromPath(r.URL.Path)
 		if name == "" {
 			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "export name is required"))
+			return
+		}
+		// Verify the target is an NFS export before deleting it.
+		existing, err := mgr.Get(r.Context(), name)
+		if err != nil {
+			writeAppError(w, err)
+			return
+		}
+		if existing.Type != domain.ShareTypeNFS {
+			writeAppError(w, apperrors.New(apperrors.ErrNotFound, "NFS export not found"))
 			return
 		}
 		if err := mgr.Delete(r.Context(), name, r.RemoteAddr); err != nil {

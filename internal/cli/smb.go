@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"kopelan/mingyue-go/internal/audit"
 	"kopelan/mingyue-go/internal/domain"
 	shareService "kopelan/mingyue-go/internal/service/share"
 )
@@ -103,6 +102,10 @@ func newSmbGetCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "Error:", err)
 				return err
 			}
+			if s.Type != domain.ShareTypeSamba {
+				fmt.Fprintf(os.Stderr, "Error: %q is not a Samba share; use 'mingyue nfs get %s'\n", args[0], args[0])
+				return fmt.Errorf("not a Samba share: %s", args[0])
+			}
 
 			if IsJSONOutput() {
 				return WriteJSON(s)
@@ -132,8 +135,9 @@ func newSmbCreateCmd() *cobra.Command {
 		Short: "Create a new Samba share",
 		Long: `Create a new Samba share and reload smbd.
 
-The share is written to /var/lib/mingyue/shares.json and appended to
-/etc/samba/smb.conf.d/mingyue.conf, then smbd is signalled to reload.
+The share is written to /var/lib/mingyue/shares.json and
+/etc/samba/smb.conf.d/mingyue.conf is regenerated and overwritten on each
+reload, then smbd is signalled to reload.
 
 Example:
   mingyue smb create myshare --path /srv/myshare
@@ -203,6 +207,17 @@ clears those settings from the share configuration.`,
 			mgr, cleanup := newShareMgr()
 			defer cleanup()
 
+			// Verify the target is a Samba share before updating it.
+			existing, err := mgr.Get(ctx, args[0])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				return err
+			}
+			if existing.Type != domain.ShareTypeSamba {
+				fmt.Fprintf(os.Stderr, "Error: %q is not a Samba share; use 'mingyue nfs update %s'\n", args[0], args[0])
+				return fmt.Errorf("not a Samba share: %s", args[0])
+			}
+
 			s := domain.Share{
 				Name:          args[0],
 				Type:          domain.ShareTypeSamba,
@@ -257,6 +272,17 @@ share is automatically restored.`,
 			mgr, cleanup := newShareMgr()
 			defer cleanup()
 
+			// Verify the target is a Samba share before deleting it.
+			existing, err := mgr.Get(ctx, args[0])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				return err
+			}
+			if existing.Type != domain.ShareTypeSamba {
+				fmt.Fprintf(os.Stderr, "Error: %q is not a Samba share; use 'mingyue nfs delete %s'\n", args[0], args[0])
+				return fmt.Errorf("not a Samba share: %s", args[0])
+			}
+
 			if err := mgr.Delete(ctx, args[0], "cli"); err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err)
 				return err
@@ -294,10 +320,8 @@ Use a pipe for non-interactive use:
 	return cmd
 }
 
-func newSmbUserMgr() (*shareService.SambaUserManager, func()) {
-	logger := audit.NewFileLogger("")
-	mgr := shareService.NewSambaUserManager()
-	return mgr, func() { logger.Close() }
+func newSmbUserMgr() *shareService.SambaUserManager {
+	return shareService.NewSambaUserManager()
 }
 
 func newSmbUserListCmd() *cobra.Command {
@@ -308,8 +332,7 @@ func newSmbUserListCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			mgr, cleanup := newSmbUserMgr()
-			defer cleanup()
+			mgr := newSmbUserMgr()
 
 			users, err := mgr.ListUsers(ctx)
 			if err != nil {
@@ -352,8 +375,7 @@ The password is read from standard input:
 				return err
 			}
 
-			mgr, cleanup := newSmbUserMgr()
-			defer cleanup()
+			mgr := newSmbUserMgr()
 
 			if err := mgr.AddUser(ctx, args[0], password); err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err)
@@ -378,8 +400,7 @@ func newSmbUserRemoveCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
-			mgr, cleanup := newSmbUserMgr()
-			defer cleanup()
+			mgr := newSmbUserMgr()
 
 			if err := mgr.RemoveUser(ctx, args[0]); err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err)
@@ -414,8 +435,7 @@ The new password is read from standard input:
 				return err
 			}
 
-			mgr, cleanup := newSmbUserMgr()
-			defer cleanup()
+			mgr := newSmbUserMgr()
 
 			if err := mgr.SetPassword(ctx, args[0], password); err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err)

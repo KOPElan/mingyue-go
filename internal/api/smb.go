@@ -96,6 +96,16 @@ func smbShareUpdateHandler(mgr *shareService.Manager) http.HandlerFunc {
 			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "share name is required"))
 			return
 		}
+		// Verify the existing resource is an SMB share before overwriting it.
+		existing, err := mgr.Get(r.Context(), name)
+		if err != nil {
+			writeAppError(w, err)
+			return
+		}
+		if existing.Type != domain.ShareTypeSamba {
+			writeAppError(w, apperrors.New(apperrors.ErrNotFound, "SMB share not found"))
+			return
+		}
 		var s domain.Share
 		if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
 			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "invalid JSON body"))
@@ -123,6 +133,16 @@ func smbShareDeleteHandler(mgr *shareService.Manager) http.HandlerFunc {
 		name := smbShareNameFromPath(r.URL.Path)
 		if name == "" {
 			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "share name is required"))
+			return
+		}
+		// Verify the target is an SMB share before deleting it.
+		existing, err := mgr.Get(r.Context(), name)
+		if err != nil {
+			writeAppError(w, err)
+			return
+		}
+		if existing.Type != domain.ShareTypeSamba {
+			writeAppError(w, apperrors.New(apperrors.ErrNotFound, "SMB share not found"))
 			return
 		}
 		if err := mgr.Delete(r.Context(), name, r.RemoteAddr); err != nil {
@@ -222,7 +242,17 @@ func smbUserAddHandler(mgr *shareService.SambaUserManager) http.HandlerFunc {
 			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "invalid JSON body"))
 			return
 		}
-		if err := mgr.AddUser(r.Context(), req.Username, req.Password); err != nil {
+		username := strings.TrimSpace(req.Username)
+		password := strings.TrimSpace(req.Password)
+		if username == "" {
+			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "username is required"))
+			return
+		}
+		if password == "" {
+			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "password is required"))
+			return
+		}
+		if err := mgr.AddUser(r.Context(), username, password); err != nil {
 			writeAppError(w, err)
 			return
 		}
@@ -274,7 +304,12 @@ func smbUserSetPasswordHandler(mgr *shareService.SambaUserManager) http.HandlerF
 			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "invalid JSON body"))
 			return
 		}
-		if err := mgr.SetPassword(r.Context(), username, req.Password); err != nil {
+		password := strings.TrimSpace(req.Password)
+		if password == "" {
+			writeAppError(w, apperrors.New(apperrors.ErrInvalidInput, "password is required"))
+			return
+		}
+		if err := mgr.SetPassword(r.Context(), username, password); err != nil {
 			writeAppError(w, err)
 			return
 		}

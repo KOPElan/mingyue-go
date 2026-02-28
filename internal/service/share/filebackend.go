@@ -145,10 +145,13 @@ func (b *fileBackend) Delete(_ context.Context, name string) error {
 // Reload persists the current in-memory share state to disk and regenerates
 // Samba and NFS configuration snippets, then signals the appropriate services.
 //
-// If only Samba shares are configured, the NFS reload is skipped (and vice
-// versa). Deleting the last share of a given type writes an empty config file
-// but does not reload the service; a subsequent service restart will pick up
-// the empty config. This is acceptable behaviour for a first implementation.
+// It reloads a service if there are currently shares of that type OR if the
+// previous on-disk state contained shares of that type (handles the "delete
+// last share" case so the service picks up the now-empty config immediately).
+//
+// If a service reload command fails the on-disk files are restored to the state
+// they were in before this Reload call, so that a process restart will not load
+// a partially-updated configuration.
 func (b *fileBackend) Reload(ctx context.Context) error {
 	b.mu.RLock()
 	shares := make([]domain.Share, 0, len(b.shares))
@@ -159,6 +162,17 @@ func (b *fileBackend) Reload(ctx context.Context) error {
 
 	// Deterministic output order.
 	sort.Slice(shares, func(i, j int) bool { return shares[i].Name < shares[j].Name })
+
+	// Snapshot on-disk files before writing so we can roll them back if the
+	// service reload command fails.  Non-existence is treated as a nil snapshot
+	// (restoreFile will remove the file during rollback in that case).
+	oldState, _ := os.ReadFile(b.cfg.StatePath)
+	oldSambaConf, _ := os.ReadFile(b.cfg.SambaConfPath)
+	oldNFSExports, _ := os.ReadFile(b.cfg.NFSExportsPath)
+
+	// Determine which service types were present on disk before this reload so
+	// that we reload a service even when its last share was just deleted.
+	hadSamba, hadNFS := diskHasShareTypes(oldState)
 
 	// Persist the authoritative JSON state file first.
 	if err := b.saveState(shares); err != nil {
@@ -173,7 +187,8 @@ func (b *fileBackend) Reload(ctx context.Context) error {
 		return err
 	}
 
-	// Reload services that have shares in the current configuration.
+	// Reload services that have shares in the current configuration OR had them
+	// in the previous configuration.
 	hasSamba, hasNFS := false, false
 	for _, s := range shares {
 		switch s.Type {
@@ -184,13 +199,22 @@ func (b *fileBackend) Reload(ctx context.Context) error {
 		}
 	}
 
-	if hasSamba {
+	// restoreDisk rolls back the on-disk files to the snapshot taken above.
+	restoreDisk := func() {
+		restoreFile(b.cfg.StatePath, oldState, 0640)
+		restoreFile(b.cfg.SambaConfPath, oldSambaConf, 0640)
+		restoreFile(b.cfg.NFSExportsPath, oldNFSExports, 0640)
+	}
+
+	if hasSamba || hadSamba {
 		if _, err := b.cfg.Commander.Run(ctx, "smbcontrol", "all", "reload-config"); err != nil {
+			restoreDisk()
 			return apperrors.Wrap(apperrors.ErrInternal, "failed to reload samba", err)
 		}
 	}
-	if hasNFS {
+	if hasNFS || hadNFS {
 		if _, err := b.cfg.Commander.Run(ctx, "exportfs", "-ra"); err != nil {
+			restoreDisk()
 			return apperrors.Wrap(apperrors.ErrInternal, "failed to reload NFS exports", err)
 		}
 	}
@@ -199,6 +223,43 @@ func (b *fileBackend) Reload(ctx context.Context) error {
 }
 
 // ── persistence ───────────────────────────────────────────────────────────────
+
+// diskHasShareTypes parses a JSON state snapshot and returns whether it
+// contains Samba or NFS shares.  Errors (including a nil/empty input) are
+// silently ignored and both booleans default to false.
+func diskHasShareTypes(data []byte) (hasSamba, hasNFS bool) {
+	if len(data) == 0 {
+		return
+	}
+	var shares []domain.Share
+	if err := json.Unmarshal(data, &shares); err != nil {
+		return
+	}
+	for _, s := range shares {
+		switch s.Type {
+		case domain.ShareTypeSamba:
+			hasSamba = true
+		case domain.ShareTypeNFS:
+			hasNFS = true
+		}
+	}
+	return
+}
+
+// restoreFile writes content back to path, or removes path when content is nil
+// (indicating the file did not exist before the current Reload cycle).
+// Errors are logged but not propagated; the caller is already handling a failure path.
+func restoreFile(path string, content []byte, perm os.FileMode) {
+	if content != nil {
+		if err := os.WriteFile(path, content, perm); err != nil {
+			log.Printf("share: warning: could not restore %s during rollback: %v", path, err)
+		}
+	} else {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("share: warning: could not remove %s during rollback: %v", path, err)
+		}
+	}
+}
 
 // saveState writes the given shares as a JSON array to the state file.
 // Parent directories are created if necessary.

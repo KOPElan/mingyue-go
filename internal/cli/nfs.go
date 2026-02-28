@@ -102,6 +102,10 @@ func newNfsGetCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "Error:", err)
 				return err
 			}
+			if s.Type != domain.ShareTypeNFS {
+				fmt.Fprintf(os.Stderr, "Error: %q is not an NFS export; use 'mingyue smb get %s'\n", args[0], args[0])
+				return fmt.Errorf("not an NFS export: %s", args[0])
+			}
 
 			if IsJSONOutput() {
 				return WriteJSON(s)
@@ -131,8 +135,9 @@ func newNfsCreateCmd() *cobra.Command {
 		Short: "Create a new NFS export",
 		Long: `Create a new NFS export and reload the NFS server.
 
-The export is written to /var/lib/mingyue/shares.json and appended to
-/etc/exports.d/mingyue.exports, then exportfs is called to reload.
+The export is written to /var/lib/mingyue/shares.json and
+/etc/exports.d/mingyue.exports is regenerated and overwritten on each
+reload, then exportfs is called to reload.
 
 Example:
   mingyue nfs create data --path /data/nfs
@@ -195,6 +200,17 @@ clears those settings from the export configuration.`,
 			mgr, cleanup := newShareMgr()
 			defer cleanup()
 
+			// Verify the target is an NFS export before updating it.
+			existing, err := mgr.Get(ctx, args[0])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				return err
+			}
+			if existing.Type != domain.ShareTypeNFS {
+				fmt.Fprintf(os.Stderr, "Error: %q is not an NFS export; use 'mingyue smb update %s'\n", args[0], args[0])
+				return fmt.Errorf("not an NFS export: %s", args[0])
+			}
+
 			s := domain.Share{
 				Name:     args[0],
 				Type:     domain.ShareTypeNFS,
@@ -242,6 +258,17 @@ automatically restored.`,
 
 			mgr, cleanup := newShareMgr()
 			defer cleanup()
+
+			// Verify the target is an NFS export before deleting it.
+			existing, err := mgr.Get(ctx, args[0])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				return err
+			}
+			if existing.Type != domain.ShareTypeNFS {
+				fmt.Fprintf(os.Stderr, "Error: %q is not an NFS export; use 'mingyue smb delete %s'\n", args[0], args[0])
+				return fmt.Errorf("not an NFS export: %s", args[0])
+			}
 
 			if err := mgr.Delete(ctx, args[0], "cli"); err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err)

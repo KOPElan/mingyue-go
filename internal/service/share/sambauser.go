@@ -63,6 +63,9 @@ func (m *SambaUserManager) ListUsers(ctx context.Context) ([]SambaUser, error) {
 			users = append(users, SambaUser{Username: parts[0]})
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, apperrors.Wrap(apperrors.ErrInternal, "failed to parse samba users", err)
+	}
 	return users, nil
 }
 
@@ -71,6 +74,9 @@ func (m *SambaUserManager) ListUsers(ctx context.Context) ([]SambaUser, error) {
 func (m *SambaUserManager) AddUser(ctx context.Context, username, password string) error {
 	if strings.TrimSpace(username) == "" {
 		return apperrors.New(apperrors.ErrInvalidInput, "username must not be empty")
+	}
+	if strings.TrimSpace(password) == "" {
+		return apperrors.New(apperrors.ErrInvalidInput, "password must not be empty")
 	}
 	// smbpasswd -a -s reads: new password, then confirmation password.
 	input := password + "\n" + password + "\n"
@@ -99,6 +105,9 @@ func (m *SambaUserManager) RemoveUser(ctx context.Context, username string) erro
 func (m *SambaUserManager) SetPassword(ctx context.Context, username, password string) error {
 	if strings.TrimSpace(username) == "" {
 		return apperrors.New(apperrors.ErrInvalidInput, "username must not be empty")
+	}
+	if strings.TrimSpace(password) == "" {
+		return apperrors.New(apperrors.ErrInvalidInput, "password must not be empty")
 	}
 	// smbpasswd -s reads: new password, then confirmation password.
 	input := password + "\n" + password + "\n"

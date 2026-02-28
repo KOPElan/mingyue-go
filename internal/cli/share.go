@@ -126,8 +126,8 @@ func newShareCreateCmd() *cobra.Command {
 		Short: "Create a new network share",
 		Long: `Create a new Samba (smb) or NFS (nfs) network share and reload the service.
 
-The share is appended to /var/lib/mingyue/shares.json and the relevant
-service configuration file is regenerated and reloaded immediately.
+The share state is written/updated in /var/lib/mingyue/shares.json and the
+relevant service configuration file is regenerated and reloaded immediately.
 
 Example — create a read-write Samba share:
   mingyue share create myshare --path /srv/myshare --type smb
