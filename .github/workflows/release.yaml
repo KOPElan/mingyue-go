@@ -10,6 +10,14 @@ on:
         description: "Release tag (e.g. v1.0.0)"
         required: true
         type: string
+      build_type:
+        description: "Build type"
+        required: false
+        type: choice
+        default: release
+        options:
+          - release
+          - debug
 
 permissions:
   contents: write
@@ -40,23 +48,15 @@ jobs:
           fi
 
   build:
-    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    name: Build (linux/${{ matrix.goarch }})
     needs: [prepare]
     if: always() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
-          - goos: windows
-            goarch: amd64
+          - goarch: amd64
+          - goarch: arm64
 
     steps:
       - name: Checkout code
@@ -76,33 +76,55 @@ jobs:
           VERSION="${{ github.event.inputs.tag || github.ref_name }}"
           echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Set binary name
-        id: bin
+      - name: Resolve build type
+        id: build_type
         run: |
-          NAME=mingyue-${{ matrix.goos }}-${{ matrix.goarch }}
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            NAME="${NAME}.exe"
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'release' }}"
+          echo "value=${BUILD_TYPE}" >> "$GITHUB_OUTPUT"
+
+      - name: Set package name
+        id: pkg
+        run: |
+          BUILD_TYPE="${{ steps.build_type.outputs.value }}"
+          VERSION="${{ steps.version.outputs.value }}"
+          if [ "${BUILD_TYPE}" = "debug" ]; then
+            NAME="mingyue-linux-${{ matrix.goarch }}-${VERSION}-debug"
+          else
+            NAME="mingyue-linux-${{ matrix.goarch }}-${VERSION}"
           fi
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Build binary
         env:
-          GOOS: ${{ matrix.goos }}
+          GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          LDFLAGS="-s -w \
-            -X kopelan/mingyue-go/internal/cli.BuildVersion=${{ steps.version.outputs.value }} \
+          BUILD_TYPE="${{ steps.build_type.outputs.value }}"
+          BASE_LDFLAGS="-X kopelan/mingyue-go/internal/cli.BuildVersion=${{ steps.version.outputs.value }} \
             -X kopelan/mingyue-go/internal/cli.BuildCommit=${{ github.sha }} \
             -X kopelan/mingyue-go/internal/cli.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
             -X kopelan/mingyue-go/internal/api.Version=${{ steps.version.outputs.value }}"
-          go build -trimpath -ldflags="${LDFLAGS}" -o ${{ steps.bin.outputs.name }} ./cmd/mingyue
+          if [ "${BUILD_TYPE}" = "debug" ]; then
+            go build -ldflags="${BASE_LDFLAGS}" -o mingyue ./cmd/mingyue
+          else
+            go build -trimpath -ldflags="-s -w ${BASE_LDFLAGS}" -o mingyue ./cmd/mingyue
+          fi
+
+      - name: Package release bundle
+        run: |
+          PKG="${{ steps.pkg.outputs.name }}"
+          mkdir -p "${PKG}"
+          cp mingyue "${PKG}/"
+          cp scripts/install.sh scripts/uninstall.sh "${PKG}/"
+          cp README.md "${PKG}/"
+          tar -czf "${PKG}.tar.gz" "${PKG}/"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.bin.outputs.name }}
-          path: ${{ steps.bin.outputs.name }}
+          name: ${{ steps.pkg.outputs.name }}
+          path: ${{ steps.pkg.outputs.name }}.tar.gz
           retention-days: 1
 
   release:
