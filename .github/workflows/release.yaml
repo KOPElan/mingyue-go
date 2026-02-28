@@ -101,9 +101,10 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           BUILD_TYPE="${{ steps.build_type.outputs.value }}"
+          BUILD_DATE=$(git log -1 --format=%cI ${{ github.sha }})
           BASE_LDFLAGS="-X kopelan/mingyue-go/internal/cli.BuildVersion=${{ steps.version.outputs.value }} \
             -X kopelan/mingyue-go/internal/cli.BuildCommit=${{ github.sha }} \
-            -X kopelan/mingyue-go/internal/cli.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            -X kopelan/mingyue-go/internal/cli.BuildDate=${BUILD_DATE} \
             -X kopelan/mingyue-go/internal/api.Version=${{ steps.version.outputs.value }}"
           if [ "${BUILD_TYPE}" = "debug" ]; then
             go build -ldflags="${BASE_LDFLAGS}" -o mingyue ./cmd/mingyue
