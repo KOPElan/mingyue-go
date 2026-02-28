@@ -673,11 +673,10 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 
 ## Phase 4 — 共享管理端点
 
-> **说明**：当前共享后端为内存存储（placeholder），变更不落盘，重启后丢失。以下功能为后续独立 PR 追踪：
->
-> 1. **SMB/NFS 逻辑拆分**：将 `internal/service/share/` 拆分为 `internal/service/samba/`（写入 `smb.conf`，调用 `smbd reload`）和 `internal/service/nfs/`（写入 `/etc/exports`，调用 `exportfs -r`），两者 reload 机制不同，不适合合并为同一后端。
-> 2. **SMB 权限字段**：`domain.SambaShare` 需扩展 `valid_users`/`write_list`/`browseable`/`create_mask` 等 Samba 特有字段，在 `POST`/`PUT /api/v1/shares` 请求体中暴露。
-> 3. **Samba 用户管理**：新增 `GET|POST /api/v1/samba/users`、`PUT|DELETE /api/v1/samba/users/{username}` 端点，封装 `useradd`/`smbpasswd -a`/`smbpasswd -n`/`smbpasswd -x` 等系统调用，独立于共享 CRUD 管理。
+> 共享状态持久化至 `/var/lib/mingyue/shares.json`；进程重启后自动恢复。
+> Samba 配置片段写入 `/etc/samba/smb.conf.d/mingyue.conf`（需在 `/etc/samba/smb.conf` 中添加 `include` 指令）；
+> NFS exports 片段写入 `/etc/exports.d/mingyue.exports`。
+> 服务重载：Samba 类型共享触发 `smbcontrol all reload-config`；NFS 类型共享触发 `exportfs -ra`。
 
 ### GET /api/v1/shares
 
@@ -769,9 +768,10 @@ API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内�
 
 | HTTP 状态码 | 错误码 | 触发条件 |
 |-------------|--------|----------|
-| 400 | `INVALID_INPUT` | JSON 错误、必填字段缺失、类型不支持、名称含 `/`、名称已存在 |
+| 400 | `INVALID_INPUT` | JSON 错误、必填字段缺失、类型不支持、名称含 `/` |
 | 401 | `UNAUTHORIZED` | 未提供有效 Bearer Token |
 | 403 | `FORBIDDEN` | 角色不足（viewer） |
+| 409 | `CONFLICT` | 同名共享已存在 |
 | 500 | `INTERNAL` | 创建失败或服务重载失败 |
 
 ---

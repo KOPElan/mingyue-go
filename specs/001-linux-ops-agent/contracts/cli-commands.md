@@ -672,11 +672,8 @@ mingyue file write <path> --content <text> [--root DIR] [--json]
 
 网络共享管理命令组。
 
-> **注意**：当前共享后端为内存存储（placeholder）。`create`/`update`/`delete` 的变更**不会持久化到磁盘**，进程重启后将丢失。以下功能为后续独立 PR 追踪：
->
-> 1. **SMB/NFS 逻辑拆分**：`samba` 子命令写入 `smb.conf` + `smbd reload`；`nfs` 子命令写入 `/etc/exports` + `exportfs -r`；两套命令独立实现。
-> 2. **SMB 权限配置**：`share create/update` 需支持 `--valid-users`/`--write-list`/`--create-mask` 等 Samba 特有参数。
-> 3. **Samba 用户管理**：新增 `mingyue samba user list|add|set-password|delete` 子命令组，封装 `useradd`/`smbpasswd` 系统调用。
+> 共享配置持久化至 `/var/lib/mingyue/shares.json`，进程重启后自动恢复。
+> `create`/`update`/`delete` 操作会自动重新生成 Samba（`/etc/samba/smb.conf.d/mingyue.conf`）和 NFS（`/etc/exports.d/mingyue.exports`）配置片段，并触发相应服务重载。
 
 ---
 
@@ -777,7 +774,7 @@ mingyue share create <name> --path <dir> [--type smb|nfs] [--comment TEXT]
 { "name": "myshare", "result": "created" }
 ```
 
-**退出码**：`0` 成功；`1` 校验失败（名称含 `/`、路径为空、类型不支持）或服务重载失败
+**退出码**：`0` 成功；`1` 校验失败（名称含 `/`、路径为空、类型不支持）、名称已存在（`CONFLICT`）或服务重载失败
 
 ---
 

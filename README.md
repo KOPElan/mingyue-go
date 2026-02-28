@@ -358,8 +358,10 @@ go vet ./...
 | 路径 | 用途 |
 |------|------|
 | `/etc/mingyue/` | 配置文件 |
-| `/var/lib/mingyue/` | 运行时状态（PID 文件等） |
+| `/var/lib/mingyue/` | 运行时状态（PID 文件、共享状态 `shares.json` 等） |
 | `/var/log/mingyue/` | 运行日志与审计日志（`audit.log`） |
+| `/etc/samba/smb.conf.d/mingyue.conf` | 自动生成的 Samba 配置片段（由共享管理服务维护） |
+| `/etc/exports.d/mingyue.exports` | 自动生成的 NFS exports 片段（由共享管理服务维护） |
 
 **CI 质量门禁**：每个 PR 自动执行 `go mod tidy` + `go build ./...` + `go test ./...` + `go vet`，以及 OpenAPI 规范同步检查。
 
@@ -404,7 +406,7 @@ go vet ./...
 | **Phase 2** ✅ | 系统监控 + 进程管理：CPU/内存/磁盘概览、进程列表与终止、CLI/API 对齐、Bearer Token 认证 | 已完成 |
 | **Phase 3** | 磁盘管理：本地挂载/卸载、CIFS/NFS 挂载/卸载、SMART 信息、幂等与审计 | 规划中 |
 | **Phase 4** ✅ | 文件管理 + 共享管理：文件操作（路径安全+符号链接防护）、Samba/NFS 共享 CRUD（内存占位）、审计日志完善 | 已完成 |
-| **Phase 4.x** | 共享管理完善（后续 PR）：① SMB/NFS 服务拆分（`service/samba` + `service/nfs`，真实配置文件落盘）；② SMB 权限字段（`valid_users`/`write_list`/`create_mask`）；③ Samba 用户管理（`smbpasswd` 封装） | 待实现 |
+| **Phase 4.x** ✅ | 共享管理持久化：JSON 状态文件落盘（`/var/lib/mingyue/shares.json`）、自动生成 Samba 配置片段（`/etc/samba/smb.conf.d/mingyue.conf`）、自动生成 NFS exports 片段（`/etc/exports.d/mingyue.exports`）、服务重载（`smbcontrol all reload-config` / `exportfs -ra`）、进程重启后状态自动恢复 | 已完成 |
 | **Phase 5** | 网络管理 + 权限/ACL（P1 迭代） | 待定 |
 | **Phase 6** | OpenAPI 规范 + CI 文档同步 + 安装脚本（`install.sh`）+ README | 待定 |
 
