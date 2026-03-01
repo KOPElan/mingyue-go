@@ -27,8 +27,14 @@ func TestGenerateKey_Length(t *testing.T) {
 }
 
 func TestGenerateKey_Uniqueness(t *testing.T) {
-	k1, _ := auth.GenerateKey()
-	k2, _ := auth.GenerateKey()
+	k1, err := auth.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey() error: %v", err)
+	}
+	k2, err := auth.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey() error: %v", err)
+	}
 	if k1 == k2 {
 		t.Error("GenerateKey() returned identical keys on consecutive calls")
 	}

@@ -102,8 +102,12 @@ func Browse(timeout time.Duration) ([]AgentInfo, error) {
 	for {
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			// Deadline exceeded or connection closed — stop collecting.
-			break
+			// Only stop collecting on a read deadline (timeout); any other
+			// error is propagated to the caller so it is not silently dropped.
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				break
+			}
+			return nil, fmt.Errorf("discovery browse: read: %w", err)
 		}
 		var info AgentInfo
 		if err := json.Unmarshal(buf[:n], &info); err != nil {

@@ -304,6 +304,8 @@ Starting mingyue daemon on :7070 (pid file: /var/run/mingyue/mingyue.pid)
 a3f1c2d4e5f67890...  (64-char hex)
 ```
 
+> **⚠️ 安全提示（systemd 用户）**：若通过 `systemd` 服务启动 agent（`StandardOutput=journal`），初始密钥会被记录到系统日志，任何有日志读取权限的用户均可获取。**推荐做法**：以交互式终端首次启动一次，保存密钥后停止；然后通过服务方式正式运行。或直接用 `mingyue auth keygen --role admin --subject admin` 在服务启动前手动创建管理员密钥。
+
 **管理 API 密钥（CLI）**
 
 ```sh

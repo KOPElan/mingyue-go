@@ -5,6 +5,7 @@
 package auth
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -111,6 +112,11 @@ func loadEntries(path string) ([]KeyEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read keystore %s: %w", path, err)
 	}
+	// Treat an empty or whitespace-only file the same as a missing file so
+	// that a first-run with an empty keystore file is handled gracefully.
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, nil
+	}
 	var entries []KeyEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil, fmt.Errorf("parse keystore %s: %w", path, err)
@@ -127,5 +133,50 @@ func writeEntries(path string, entries []KeyEntry) error {
 	if err != nil {
 		return fmt.Errorf("marshal keystore: %w", err)
 	}
-	return os.WriteFile(path, data, 0o600)
+
+	// Use a temp file + fsync + rename for atomic update to avoid a
+	// half-written keystore on crash. os.CreateTemp creates with 0600;
+	// we Chmod again after rename to handle pre-existing over-permissive files.
+	tmpFile, err := os.CreateTemp(dir, ".apikeys-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp keystore in %s: %w", dir, err)
+	}
+	tmpPath := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("write temp keystore %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("fsync temp keystore %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp keystore %s: %w", tmpPath, err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename temp keystore %s to %s: %w", tmpPath, path, err)
+	}
+	cleanup = false
+
+	// Tighten permissions on the final file in case it already existed with
+	// wider permissions before the rename replaced it.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("chmod keystore %s: %w", path, err)
+	}
+
+	// Best-effort: fsync the directory so the rename is durable.
+	if dirFile, err := os.Open(dir); err == nil {
+		_ = dirFile.Sync()
+		_ = dirFile.Close()
+	}
+
+	return nil
 }

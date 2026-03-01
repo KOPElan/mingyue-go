@@ -64,8 +64,14 @@ Web 浏览器 / Web 前端
 
 ### 步骤一：在宿主机上启动 agent
 
+> **⚠️ systemd 安全警告**：若通过 systemd 服务启动 agent（`StandardOutput=journal`），初始密钥会被写入系统日志，任何有日志读取权限的用户均可获取完整 admin token。**请勿在生产环境通过 systemd 首次启动来获取密钥**。
+>
+> **推荐方案**：
+> 1. **交互式首次初始化**：以终端交互方式手动运行一次（如下），保存密钥后停止，再通过服务方式正式运行。
+> 2. **预先生成密钥**：在启动服务前通过 `sudo mingyue auth keygen --role admin --subject admin` 手动创建管理员密钥，避免服务启动时打印密钥。
+
 ```bash
-# 首次启动 — 会自动生成初始 admin 密钥
+# 首次启动（交互式终端，非 systemd 环境） — 会自动生成初始 admin 密钥
 sudo ./mingyue agent start
 
 # 输出示例：

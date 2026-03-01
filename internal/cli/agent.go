@@ -45,7 +45,7 @@ func newAgentStartCmd() *cobra.Command {
 			// authenticated requests can be served immediately after start.
 			entries, err := auth.LoadKeyStore(keystorePath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not load keystore %s: %v\n", keystorePath, err)
+				return fmt.Errorf("load keystore %s: %w", keystorePath, err)
 			}
 
 			// On first run (empty keystore) generate an initial admin key so
@@ -68,24 +68,28 @@ func newAgentStartCmd() *cobra.Command {
 					auth.RegisterAPIKey(key, auth.Token{Raw: key, Role: auth.RoleAdmin, Subject: "initial-admin"})
 				}
 				if IsJSONOutput() {
-					_ = WriteJSON(map[string]string{
+					if err := WriteJSON(map[string]string{
 						"status":      "starting",
 						"address":     d.ListenAddr,
 						"pidFile":     d.PIDPath,
 						"initialKey":  key,
 						"initialRole": "admin",
-					})
+					}); err != nil {
+						return err
+					}
 				} else {
 					fmt.Printf("Starting mingyue daemon on %s (pid file: %s)\n", d.ListenAddr, d.PIDPath)
 					fmt.Printf("\n*** Initial admin API key (save this) ***\n%s\n\n", key)
 				}
 			} else {
 				if IsJSONOutput() {
-					_ = WriteJSON(map[string]string{
+					if err := WriteJSON(map[string]string{
 						"status":  "starting",
 						"address": d.ListenAddr,
 						"pidFile": d.PIDPath,
-					})
+					}); err != nil {
+						return err
+					}
 				} else {
 					fmt.Printf("Starting mingyue daemon on %s (pid file: %s)\n", d.ListenAddr, d.PIDPath)
 				}
