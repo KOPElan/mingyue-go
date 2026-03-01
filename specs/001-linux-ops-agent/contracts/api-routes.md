@@ -22,7 +22,12 @@ Authorization: Bearer <api-key>
 - `operator`：只读、进程终止、文件写/删/移/复制、共享创建/更新/删除
 - `admin`：全部操作
 
-API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册（当前为内存存储，重启后需重新配置）。
+API Key 通过 `auth.RegisterAPIKey()` 在进程启动时注册。自 Phase 7 起，密钥使用文件持久化存储：
+
+- **密钥文件**：`/var/lib/mingyue/apikeys.json`（权限 0600，仅 owner 可读）
+- **首次启动**：若密钥文件为空，agent 自动生成一个 admin 密钥并打印到 stdout，请妥善保存
+- **密钥管理**：使用 `mingyue auth keygen/list/revoke` CLI 命令管理密钥（详见 CLI 契约）
+- **重启持久性**：密钥写入文件后重启 agent 会自动加载，无需重新配置
 
 ---
 

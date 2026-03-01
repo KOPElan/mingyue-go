@@ -54,6 +54,7 @@ func init() {
 	// Register sub-commands.
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newAgentCmd())
+	rootCmd.AddCommand(newAuthCmd())
 	rootCmd.AddCommand(newSystemCmd())
 	rootCmd.AddCommand(newProcessCmd())
 	rootCmd.AddCommand(newDiskCmd())

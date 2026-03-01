@@ -1,4 +1,4 @@
-# CLI 命令契约（Phase 1–6）
+# CLI 命令契约（Phase 1–7）
 
 本文件定义已实现的 CLI 命令的参数、输出字段与退出码约定，作为 CLI 行为的稳定契约。
 
@@ -51,26 +51,43 @@ mingyue version dev
 启动 HTTP 守护进程（前台运行，阻塞直至收到信号）。
 
 ```sh
-mingyue agent start [--listen ADDR]
+mingyue agent start [--listen ADDR] [--keystore PATH]
 ```
 
 | 标志 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--listen` | string | `:7070` | HTTP 监听地址 |
+| `--keystore` | string | `/var/lib/mingyue/apikeys.json` | API 密钥文件路径 |
 
-**人类可读输出示例**
+启动时行为：
+1. 从 `--keystore` 文件加载所有已持久化的 API 密钥
+2. 若密钥文件为空（首次运行），自动生成一个 admin 角色密钥，保存到文件并打印到 stdout
+3. 启动 UDP 多播公告（`224.0.0.251:7071`），让局域网内的 web 前端能自动发现此 agent
+
+**人类可读输出示例（首次运行）**
+
+```
+Starting mingyue daemon on :7070 (pid file: /var/run/mingyue/mingyue.pid)
+
+*** Initial admin API key (save this) ***
+a3f1...9c2e (64-char hex)
+```
+
+**人类可读输出示例（已有密钥）**
 
 ```
 Starting mingyue daemon on :7070 (pid file: /var/run/mingyue/mingyue.pid)
 ```
 
-**JSON 输出示例**
+**JSON 输出示例（首次运行）**
 
 ```json
 {
   "status": "starting",
   "address": ":7070",
-  "pidFile": "/var/run/mingyue/mingyue.pid"
+  "pidFile": "/var/run/mingyue/mingyue.pid",
+  "initialKey": "a3f1...9c2e",
+  "initialRole": "admin"
 }
 ```
 
@@ -103,6 +120,132 @@ mingyue agent status [--json]
 **JSON 输出示例**：`{"status":"running (pid 12345)"}`
 
 **退出码**：`0`（始终成功，状态通过输出内容区分）
+
+### mingyue agent discover
+
+扫描局域网内所有正在运行的 mingyue agent。
+
+```sh
+mingyue agent discover [--timeout DURATION] [--json]
+```
+
+| 标志 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--timeout` | duration | `3s` | 等待响应的最长时间 |
+
+Agent 启动后每 3 秒向多播组 `224.0.0.251:7071` 广播自身信息。此命令收集所有响应并输出列表。
+
+**人类可读输出示例**
+
+```
+Scanning for mingyue agents (3s)...
+HOSTNAME                        ADDRESS               VERSION
+------------------------------  --------------------  -------
+myserver                        :7070                 dev
+```
+
+**JSON 输出示例**
+
+```json
+[
+  {
+    "hostname": "myserver",
+    "addr": ":7070",
+    "version": "dev"
+  }
+]
+```
+
+**退出码**：`0`（始终成功；空列表不视为错误）
+
+---
+
+## mingyue auth
+
+API 密钥管理命令组。密钥保存在 `/var/lib/mingyue/apikeys.json`（权限 0600）。
+
+### mingyue auth keygen
+
+生成并保存一个新的 API 密钥，打印到 stdout。
+
+```sh
+mingyue auth keygen [--role ROLE] [--subject LABEL] [--keystore PATH] [--json]
+```
+
+| 标志 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--role` | string | `viewer` | 角色：`viewer`、`operator` 或 `admin` |
+| `--subject` | string | `default` | 标识密钥用途的标签（如 `web-frontend`） |
+| `--keystore` | string | `/var/lib/mingyue/apikeys.json` | 密钥文件路径 |
+
+**人类可读输出示例**
+
+```
+API key generated successfully:
+  Key:     a3f1...9c2e (64-char hex，完整显示)
+  Role:    admin
+  Subject: web-frontend
+
+Keep this key secret — it grants admin access to the agent.
+```
+
+**JSON 输出示例**
+
+```json
+{
+  "key": "a3f1c2...9c2e",
+  "role": "admin",
+  "subject": "web-frontend",
+  "created_at": "2026-01-01T00:00:00Z"
+}
+```
+
+**退出码**：`0` 成功；`1` 无效角色或文件写入失败
+
+### mingyue auth list
+
+列出所有已保存的 API 密钥（密钥值部分掩码）。
+
+```sh
+mingyue auth list [--keystore PATH] [--json]
+```
+
+**人类可读输出示例**
+
+```
+KEY (masked)        ROLE        SUBJECT                   CREATED (UTC)
+------------------  ----------  ------------------------  -------------------
+a3f1...9c2e         admin       web-frontend              2026-01-01 00:00:00
+```
+
+**JSON 输出示例**
+
+```json
+[
+  {
+    "key": "a3f1...9c2e",
+    "role": "admin",
+    "subject": "web-frontend",
+    "created_at": "2026-01-01T00:00:00Z"
+  }
+]
+```
+
+**退出码**：`0`（始终成功；空列表不视为错误）
+
+### mingyue auth revoke
+
+撤销一个 API 密钥（从文件和内存中同时删除）。
+
+```sh
+mingyue auth revoke <key> [--keystore PATH] [--json]
+```
+
+**人类可读输出示例**：`Revoked API key: a3f1...9c2e`
+
+**JSON 输出示例**：`{"status":"revoked","key":"a3f1...9c2e"}`
+
+**退出码**：`0` 成功；`1` 密钥不存在或文件操作失败
 
 ---
 
