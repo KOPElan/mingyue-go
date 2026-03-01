@@ -143,8 +143,11 @@ go build -o mingyue ./cmd/mingyue
 以守护进程方式启动，对外提供 RESTful HTTP+JSON API（默认端口 `7070`，路径前缀 `/api/v1`）：
 
 ```sh
-# 启动守护进程
+# 启动守护进程（首次运行自动生成初始 admin 密钥并打印）
 ./mingyue agent start
+
+# 指定监听地址
+./mingyue agent start --listen :8080
 
 # 验证健康检查（无需认证）
 curl http://localhost:7070/api/v1/health
@@ -166,6 +169,10 @@ curl -X DELETE -H "Authorization: Bearer <api-key>" http://localhost:7070/api/v1
 
 # 停止守护进程
 ./mingyue agent stop
+
+# 发现局域网内的 mingyue agent
+./mingyue agent discover
+./mingyue agent discover --timeout 5s
 ```
 
 ### 文件管理 API 示例
@@ -286,20 +293,36 @@ sudo bash scripts/uninstall.sh
 
 守护进程使用 **Bearer Token（API Key）** 认证。未认证请求返回 `401 UNAUTHORIZED`，权限不足返回 `403 FORBIDDEN`。
 
-**注册 API Key（程序初始化时调用）**
+**自动初始化（推荐）**
 
-```go
-auth.RegisterAPIKey("my-secret-key", auth.Token{
-    Raw:     "my-secret-key",
-    Role:    auth.RoleOperator,
-    Subject: "ops-user",
-})
+首次启动守护进程时，若密钥文件为空，agent 会自动生成一个 admin 密钥并打印到 stdout：
+
 ```
+Starting mingyue daemon on :7070 (pid file: /var/run/mingyue/mingyue.pid)
+
+*** Initial admin API key (save this) ***
+a3f1c2d4e5f67890...  (64-char hex)
+```
+
+**管理 API 密钥（CLI）**
+
+```sh
+# 生成新密钥（role: viewer / operator / admin）
+sudo mingyue auth keygen --role operator --subject web-frontend
+
+# 列出所有密钥（密钥值部分掩码）
+sudo mingyue auth list
+
+# 撤销密钥
+sudo mingyue auth revoke <key>
+```
+
+密钥持久化到 `/var/lib/mingyue/apikeys.json`（权限 `0600`），重启守护进程后自动加载，无需重新配置。
 
 **请求示例**
 
 ```sh
-curl -H "Authorization: Bearer my-secret-key" \
+curl -H "Authorization: Bearer <api-key>" \
      http://localhost:7070/api/v1/system/overview
 ```
 
@@ -329,6 +352,12 @@ specs/001-linux-ops-agent/contracts/
 docs/api/openapi.yaml    # OpenAPI v3 规范（v1 全量端点，YAML 格式）
 ```
 
+Web 前端接入指南（认证流程、LAN 发现、完整 API 参考、TypeScript 示例）：
+
+```
+docs/web-integration.md  # Web 前端接入通用指南
+```
+
 所有 API 端点位于路径前缀 `/api/v1`，返回 HTTP+JSON，错误响应包含机器可解析的错误码与人类可读信息。
 
 ## 项目结构
@@ -354,6 +383,8 @@ internal/
 │   └── acl.go                   # 权限/ACL 端点
 ├── cli/                         # CLI 子命令处理器
 │   ├── root.go                  # 根命令（--json / --config 全局 flag）
+│   ├── agent.go                 # mingyue agent start/stop/status/discover
+│   ├── auth.go                  # mingyue auth keygen/list/revoke
 │   ├── system.go                # mingyue system ...
 │   ├── process.go               # mingyue process ...
 │   ├── disk.go                  # mingyue disk ...
@@ -363,6 +394,8 @@ internal/
 │   ├── share.go                 # mingyue share ...（已废弃，保留兼容）
 │   ├── network.go               # mingyue network ...
 │   └── acl.go                   # mingyue acl ...
+├── discovery/                   # 局域网 UDP 多播发现
+│   └── udp.go                   # Advertise / Browse（224.0.0.251:7071）
 ├── domain/                      # 领域模型（纯数据结构）
 ├── service/                     # 核心业务逻辑（CLI 与 API 共用同源实现）
 │   ├── system/                  # 系统监控
@@ -373,6 +406,8 @@ internal/
 │   ├── network/                 # 网络管理（接口查询与受控变更）
 │   └── acl/                     # 权限/ACL 管理（getfacl/setfacl）
 ├── auth/                        # 认证鉴权（token/API key；viewer/operator/admin 角色）
+│   ├── auth.go                  # 内存 key store；RegisterAPIKey / Validate / HasRole
+│   └── keystore.go              # 文件持久化；GenerateKey / LoadKeyStore / SaveKeyEntry / RevokeKey
 ├── audit/                       # 审计日志（结构化写入 /var/log/mingyue/audit.log）
 └── errors/                      # 统一错误结构（错误码 + 人类可读信息）
 
@@ -383,17 +418,13 @@ pkg/
     └── capabilities.go          # Linux capabilities 检测
 
 docs/
-└── api/
-    └── openapi.yaml             # OpenAPI v3 规范（v1 全量端点）
+├── api/
+│   └── openapi.yaml             # OpenAPI v3 规范（v1 全量端点）
+└── web-integration.md           # Web 前端接入指南（认证 / API 参考 / LAN 发现）
 
 scripts/
 ├── install.sh                   # 安装守护进程（systemd service 注册）
 └── uninstall.sh                 # 卸载脚本
-
-tests/
-├── contract/                    # API 契约测试（httptest）
-├── integration/                 # 集成测试（需 Linux 环境）
-└── unit/                        # 跨包单元测试工具
 
 specs/
 └── 001-linux-ops-agent/
@@ -425,7 +456,8 @@ go vet ./...
 | 路径 | 用途 |
 |------|------|
 | `/etc/mingyue/` | 配置文件 |
-| `/var/lib/mingyue/` | 运行时状态（PID 文件、共享状态 `shares.json` 等） |
+| `/var/lib/mingyue/apikeys.json` | API 密钥存储（mode 0600） |
+| `/var/lib/mingyue/shares.json` | 共享状态持久化 |
 | `/var/log/mingyue/` | 运行日志与审计日志（`audit.log`） |
 | `/etc/samba/smb.conf.d/mingyue.conf` | 自动生成的 Samba 配置片段（由共享管理服务维护） |
 | `/etc/exports.d/mingyue.exports` | 自动生成的 NFS exports 片段（由共享管理服务维护） |
@@ -479,6 +511,7 @@ go vet ./...
 | **Phase 4.x** ✅ | 共享管理持久化：JSON 状态文件落盘（`/var/lib/mingyue/shares.json`）、自动生成 Samba 配置片段（`/etc/samba/smb.conf.d/mingyue.conf`）、自动生成 NFS exports 片段（`/etc/exports.d/mingyue.exports`）、服务重载（`smbcontrol all reload-config` / `exportfs -ra`）、进程重启后状态自动恢复 | 已完成 |
 | **Phase 5** ✅ | 网络管理 + 权限/ACL：网络接口只读查询与受控变更（up/down/dhcp）、文件/目录权限与 POSIX ACL 查询（getfacl）与设置（setfacl）、审计日志 | 已完成 |
 | **Phase 6** ✅ | OpenAPI 规范 + CI 文档同步 + 安装脚本（`install.sh`/`uninstall.sh`）| 已完成 |
+| **Phase 7** ✅ | 认证持久化 + 局域网发现：API 密钥文件存储（`/var/lib/mingyue/apikeys.json`）、首次启动自动生成 admin 密钥、`mingyue auth keygen/list/revoke` 密钥管理命令、UDP 多播 LAN 发现（`224.0.0.251:7071`）、`mingyue agent discover` 命令、Web 前端接入指南（`docs/web-integration.md`）| 已完成 |
 
 ## License
 

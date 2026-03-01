@@ -1,4 +1,4 @@
-# HTTP API 路由契约（Phase 1–6）
+# HTTP API 路由契约（Phase 1–7）
 
 本文件定义已实现的 HTTP API 端点的请求/响应结构与错误约定，作为 API 行为的稳定契约。
 
