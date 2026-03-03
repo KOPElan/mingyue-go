@@ -81,6 +81,10 @@ func NewRouterWithDeps(
 	// Version — unauthenticated informational endpoint.
 	mux.HandleFunc("/api/v1/version", VersionHandler)
 
+	// Swagger UI — unauthenticated so developers can browse the API docs.
+	mux.HandleFunc("/swagger/", swaggerUIHandler)
+	mux.HandleFunc("/swagger/openapi.yaml", swaggerSpecHandler)
+
 	// ── Authenticated routes ──────────────────────────────────────────────
 	auth := middleware.Auth
 
