@@ -19,6 +19,8 @@ info:
 servers:
   - url: http://localhost:7070
     description: Default local daemon
+  - url: http://192.168.123.204:7070
+    description: remote daemon
 
 tags:
   - name: Health
