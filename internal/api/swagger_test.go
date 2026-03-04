@@ -79,3 +79,18 @@ func TestSwaggerSpec_MethodNotAllowed(t *testing.T) {
 		t.Fatalf("status: got %d, want %d", w.Code, http.StatusMethodNotAllowed)
 	}
 }
+
+// TestSwaggerUI_UnknownSubPath verifies that unrecognised sub-paths under /swagger/
+// return 404 instead of serving the UI page.
+func TestSwaggerUI_UnknownSubPath(t *testing.T) {
+	handler := buildRouter(&stubSysCollector{snap: testSnap()}, &stubProcessLister{})
+
+	for _, path := range []string{"/swagger/foo", "/swagger/favicon.ico", "/swagger/bar/baz"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("path %s: status got %d, want %d", path, w.Code, http.StatusNotFound)
+		}
+	}
+}

@@ -40,7 +40,13 @@ const swaggerUIHTML = `<!DOCTYPE html>
 `
 
 // swaggerUIHandler serves the Swagger UI HTML page at GET /swagger/.
+// Any path other than "/swagger/" or "/swagger" returns 404 to avoid
+// accidentally serving the UI page for unrecognised sub-paths.
 func swaggerUIHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/swagger/" && r.URL.Path != "/swagger" {
+		http.NotFound(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
