@@ -1,5 +1,7 @@
 // Package api wires up all HTTP routes for the mingyue agent API server.
-// All routes are mounted under the /api/v1 prefix.
+// Most routes are mounted under the /api/v1 prefix; a small number of
+// unauthenticated utility routes (Swagger UI, OpenAPI spec) live outside
+// that prefix.
 package api
 
 import (
@@ -34,7 +36,9 @@ func (r *Router) Close() error {
 	return nil
 }
 
-// NewRouter returns a Router with all /api/v1 routes registered.
+// NewRouter returns a Router with all routes registered.
+// API routes are mounted under /api/v1; developer-facing routes
+// (/swagger/, /swagger/openapi.yaml) are outside that prefix.
 // Middleware is applied in the order: auth → handler.
 // The caller must call Close() when the server shuts down.
 func NewRouter() *Router {
@@ -80,6 +84,10 @@ func NewRouterWithDeps(
 
 	// Version — unauthenticated informational endpoint.
 	mux.HandleFunc("/api/v1/version", VersionHandler)
+
+	// Swagger UI — unauthenticated so developers can browse the API docs.
+	mux.HandleFunc("/swagger/", swaggerUIHandler)
+	mux.HandleFunc("/swagger/openapi.yaml", swaggerSpecHandler)
 
 	// ── Authenticated routes ──────────────────────────────────────────────
 	auth := middleware.Auth
