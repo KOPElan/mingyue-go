@@ -1,4 +1,4 @@
-# mingyue Web 前端接入指南
+# mingyue-go Web 前端接入指南
 
 本文档是 Web 前端开发者接入 **mingyue agent** 的通用指南，涵盖：认证流程、局域网自动发现、完整 API 参考，以及 TypeScript/JavaScript 示例代码。
 
