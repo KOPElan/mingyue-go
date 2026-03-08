@@ -189,9 +189,12 @@ func (s *MountService) mountGeneric(ctx context.Context, opts MountOptions) erro
 	// source and mountpoint are positional and must come after all options.
 	args = append(args, opts.Source, opts.MountPoint)
 
-	if _, err := s.commander.Run(ctx, "mount", args...); err != nil {
-		return apperrors.Wrap(apperrors.ErrInternal,
-			fmt.Sprintf("mount failed for %s at %s", opts.Source, opts.MountPoint), err)
+	if output, err := s.commander.Run(ctx, "mount", args...); err != nil {
+		return wrapMountCommandError(
+			fmt.Sprintf("mount failed for %s at %s", opts.Source, opts.MountPoint),
+			output,
+			err,
+		)
 	}
 	return nil
 }
@@ -243,9 +246,12 @@ func (s *MountService) mountCIFS(ctx context.Context, opts MountOptions) error {
 
 	// source and mountpoint are positional and must come after all options.
 	args := []string{"-t", "cifs", "-o", mountOpts, source, opts.MountPoint}
-	if _, err := s.commander.Run(ctx, "mount", args...); err != nil {
-		return apperrors.Wrap(apperrors.ErrInternal,
-			fmt.Sprintf("cifs mount failed for %s at %s", source, opts.MountPoint), err)
+	if output, err := s.commander.Run(ctx, "mount", args...); err != nil {
+		return wrapMountCommandError(
+			fmt.Sprintf("cifs mount failed for %s at %s", source, opts.MountPoint),
+			output,
+			err,
+		)
 	}
 	return nil
 }
@@ -265,6 +271,17 @@ func normalizeCIFSSource(source string) (string, error) {
 	}
 
 	return "//" + segments[0] + "/" + strings.Join(segments[1:], "/"), nil
+}
+
+func wrapMountCommandError(message string, output []byte, err error) error {
+	detail := strings.TrimSpace(string(output))
+	if detail == "" {
+		return apperrors.Wrap(apperrors.ErrInternal, message, err)
+	}
+
+	detail = strings.ReplaceAll(detail, "\r\n", "\n")
+	detail = strings.ReplaceAll(detail, "\n", ": ")
+	return apperrors.Wrap(apperrors.ErrInternal, message+": "+detail, err)
 }
 
 // logAudit writes an audit event for a mount/umount operation.

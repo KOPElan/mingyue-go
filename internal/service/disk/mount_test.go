@@ -381,6 +381,28 @@ func TestMountService_Mount_CommandFails_AuditsFailure(t *testing.T) {
 	}
 }
 
+func TestMountService_Mount_CommandFailure_IncludesMountOutput(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{
+		output: []byte("mount: /mnt/test: mount point does not exist\n"),
+		err:    errors.New("exit status 1"),
+	}
+	svc := NewMountServiceWithDeps(reader, cmd, nil)
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     "/dev/sdb1",
+		MountPoint: "/mnt/test",
+		FSType:     "ext4",
+	}, "cli")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	assertErrorCode(t, err, apperrors.ErrInternal)
+	if !strings.Contains(err.Error(), "mount point does not exist") {
+		t.Fatalf("expected mount output in error, got %v", err)
+	}
+}
+
 // stubCommanderErr always returns an error.
 type stubCommanderErr struct{}
 
