@@ -403,6 +403,30 @@ func TestMountService_Mount_CommandFailure_IncludesMountOutput(t *testing.T) {
 	}
 }
 
+func TestMountService_Mount_CommandFailure_NormalizesMultilineOutput(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{
+		output: []byte("mount error(2): No such file or directory\r\nRefer to the mount.cifs(8) manual page\r\n"),
+		err:    errors.New("exit status 1"),
+	}
+	svc := NewMountServiceWithDeps(reader, cmd, nil)
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     "192.168.1.2/ssd",
+		MountPoint: "/mnt/ssd",
+		FSType:     "cifs",
+		Username:   "user1",
+		Password:   "test-password",
+	}, "cli")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	assertErrorCode(t, err, apperrors.ErrInternal)
+	if !strings.Contains(err.Error(), "mount error(2): No such file or directory: Refer to the mount.cifs(8) manual page") {
+		t.Fatalf("expected normalized multiline mount output in error, got %v", err)
+	}
+}
+
 // stubCommanderErr always returns an error.
 type stubCommanderErr struct{}
 

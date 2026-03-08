@@ -280,7 +280,16 @@ func wrapMountCommandError(message string, output []byte, err error) error {
 	}
 
 	detail = strings.ReplaceAll(detail, "\r\n", "\n")
-	detail = strings.ReplaceAll(detail, "\n", ": ")
+	detail = strings.ReplaceAll(detail, "\r", "\n")
+	lines := strings.Split(detail, "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	detail = strings.Join(filtered, ": ")
 	return apperrors.Wrap(apperrors.ErrInternal, message+": "+detail, err)
 }
 
