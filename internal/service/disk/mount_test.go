@@ -295,8 +295,17 @@ func TestMountService_Mount_CIFS_NormalizesSourceWithoutUNCPrefix(t *testing.T) 
 	if len(cmd.calls) == 0 {
 		t.Fatal("expected mount command call")
 	}
-	if got := cmd.calls[0][len(cmd.calls[0])-2]; got != "//192.168.1.2/ssd" {
-		t.Fatalf("expected normalized CIFS source, got %q", got)
+	args := cmd.calls[0]
+	srcIdx := sliceIndex(args, "//192.168.1.2/ssd")
+	if srcIdx < 0 {
+		t.Fatalf("expected normalized CIFS source in args, got %v", args)
+	}
+	mountPointIdx := sliceIndex(args, "/mnt/ssd")
+	if mountPointIdx < 0 {
+		t.Fatalf("expected mountpoint in args, got %v", args)
+	}
+	if srcIdx > mountPointIdx {
+		t.Fatalf("expected normalized CIFS source to appear before mountpoint, got %v", args)
 	}
 }
 
@@ -318,6 +327,30 @@ func TestMountService_Mount_CIFS_InvalidSourceReturnsErrInvalidInput(t *testing.
 	assertErrorCode(t, err, apperrors.ErrInvalidInput)
 	if len(cmd.calls) != 0 {
 		t.Fatalf("expected no mount command call, got %d", len(cmd.calls))
+	}
+}
+
+func TestMountService_Mount_CIFS_NormalizesBackslashUNCSource(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{}
+	svc := NewMountServiceWithDeps(reader, cmd, nil)
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     `\\192.168.1.2\ssd`,
+		MountPoint: "/mnt/ssd",
+		FSType:     "cifs",
+		Username:   "user1",
+		Password:   "secretpassword",
+	}, "cli")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cmd.calls) == 0 {
+		t.Fatal("expected mount command call")
+	}
+	if sliceIndex(cmd.calls[0], "//192.168.1.2/ssd") < 0 {
+		t.Fatalf("expected normalized CIFS source in args, got %v", cmd.calls[0])
 	}
 }
 
