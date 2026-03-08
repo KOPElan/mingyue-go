@@ -199,6 +199,11 @@ func (s *MountService) mountGeneric(ctx context.Context, opts MountOptions) erro
 // mountCIFS runs mount.cifs, passing credentials via a temporary file so that
 // username/password are never visible in command-line arguments.
 func (s *MountService) mountCIFS(ctx context.Context, opts MountOptions) error {
+	source, err := normalizeCIFSSource(opts.Source)
+	if err != nil {
+		return err
+	}
+
 	// Create a temporary credentials file.
 	tmpFile, err := os.CreateTemp("", "mingyue-cifs-*")
 	if err != nil {
@@ -237,12 +242,29 @@ func (s *MountService) mountCIFS(ctx context.Context, opts MountOptions) error {
 	}
 
 	// source and mountpoint are positional and must come after all options.
-	args := []string{"-t", "cifs", "-o", mountOpts, opts.Source, opts.MountPoint}
+	args := []string{"-t", "cifs", "-o", mountOpts, source, opts.MountPoint}
 	if _, err := s.commander.Run(ctx, "mount", args...); err != nil {
 		return apperrors.Wrap(apperrors.ErrInternal,
-			fmt.Sprintf("cifs mount failed for %s at %s", opts.Source, opts.MountPoint), err)
+			fmt.Sprintf("cifs mount failed for %s at %s", source, opts.MountPoint), err)
 	}
 	return nil
+}
+
+func normalizeCIFSSource(source string) (string, error) {
+	trimmed := strings.TrimSpace(source)
+	if trimmed == "" {
+		return "", apperrors.New(apperrors.ErrInvalidInput, "cifs source is required")
+	}
+
+	normalized := strings.ReplaceAll(trimmed, "\\", "/")
+	segments := strings.FieldsFunc(normalized, func(r rune) bool {
+		return r == '/'
+	})
+	if len(segments) < 2 {
+		return "", apperrors.New(apperrors.ErrInvalidInput, "cifs source must be in the form //server/share")
+	}
+
+	return "//" + segments[0] + "/" + strings.Join(segments[1:], "/"), nil
 }
 
 // logAudit writes an audit event for a mount/umount operation.

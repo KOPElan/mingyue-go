@@ -77,6 +77,7 @@ func newDiskMountCmd() *cobra.Command {
 		Long: `Mount a filesystem at the given mount point.
 
 For CIFS mounts, use --username and --password flags to provide credentials.
+The source may be written as server/share or //server/share.
 Credentials are passed via a secure temporary file and are never logged.
 
 Examples:
