@@ -53,6 +53,7 @@ type mountRequest struct {
 	FSType     string `json:"fs_type"`
 	ReadOnly   bool   `json:"read_only"`
 	Options    string `json:"options"`
+	Persistent bool   `json:"persistent,omitempty"`
 	// CIFS credentials — never echoed back in any response or log.
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
@@ -88,6 +89,7 @@ func diskMountCreateHandler(mountSvc *diskService.MountService) http.HandlerFunc
 			Username:   req.Username,
 			Password:   req.Password,
 			Domain:     req.Domain,
+			Persistent: req.Persistent,
 		}
 
 		source := r.RemoteAddr
