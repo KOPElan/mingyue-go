@@ -3,6 +3,7 @@ package audit_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -160,8 +161,7 @@ func TestFileLogger_MultipleLines(t *testing.T) {
 // complete with P95 < 200 ms; audit logging is on the critical path of every
 // mutating operation and must remain sub-millisecond.
 func BenchmarkFileLogger_Log(b *testing.B) {
-	var buf bytes.Buffer
-	logger := audit.NewWriterLogger(&buf)
+	logger := audit.NewWriterLogger(io.Discard)
 	event := audit.AuditEvent{
 		Source: "api",
 		Action: "disk.mount",
@@ -177,8 +177,7 @@ func BenchmarkFileLogger_Log(b *testing.B) {
 // BenchmarkFileLogger_Log_Failure measures the overhead of logging a failure
 // event (which additionally serialises an ErrorCode field).
 func BenchmarkFileLogger_Log_Failure(b *testing.B) {
-	var buf bytes.Buffer
-	logger := audit.NewWriterLogger(&buf)
+	logger := audit.NewWriterLogger(io.Discard)
 	event := audit.AuditEvent{
 		Source:    "api",
 		Action:    "process.kill",

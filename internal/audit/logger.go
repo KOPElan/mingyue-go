@@ -32,6 +32,10 @@ type AuditEvent struct {
 	Result string `json:"result"`
 	// ErrorCode is the machine-readable error code on failure, empty on success.
 	ErrorCode string `json:"error_code,omitempty"`
+	// HTTPStatus is the HTTP response status code set by the HTTP-layer audit
+	// middleware. Zero when the event originates from the service layer (CLI or
+	// internal service calls).
+	HTTPStatus int `json:"http_status,omitempty"`
 }
 
 // Logger is the interface for writing audit events.

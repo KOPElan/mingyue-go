@@ -3,6 +3,7 @@ package middleware_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -54,6 +55,10 @@ func TestAuditWithLogger_MutatingMethods_Logged(t *testing.T) {
 			if event["result"] != "success" {
 				t.Errorf("%s: result = %v, want success", method, event["result"])
 			}
+			// HTTPStatus must be present for all mutating requests (200 here).
+			if event["http_status"] != float64(http.StatusOK) {
+				t.Errorf("%s: http_status = %v, want %d", method, event["http_status"], http.StatusOK)
+			}
 		})
 	}
 }
@@ -103,6 +108,9 @@ func TestAuditWithLogger_FailureStatusCode_LoggedWithErrorCode(t *testing.T) {
 	if event["error_code"] != "HTTP_404" {
 		t.Errorf("error_code = %v, want HTTP_404", event["error_code"])
 	}
+	if event["http_status"] != float64(http.StatusNotFound) {
+		t.Errorf("http_status = %v, want %d", event["http_status"], http.StatusNotFound)
+	}
 }
 
 func TestAuditWithLogger_ServerError_RecordedAsFailure(t *testing.T) {
@@ -124,6 +132,9 @@ func TestAuditWithLogger_ServerError_RecordedAsFailure(t *testing.T) {
 	}
 	if event["error_code"] != "HTTP_500" {
 		t.Errorf("error_code = %v, want HTTP_500", event["error_code"])
+	}
+	if event["http_status"] != float64(http.StatusInternalServerError) {
+		t.Errorf("http_status = %v, want %d", event["http_status"], http.StatusInternalServerError)
 	}
 }
 
@@ -163,13 +174,18 @@ func TestAuditWithLogger_SuccessOmitsErrorCode(t *testing.T) {
 }
 
 func BenchmarkAuditWithLogger_Post(b *testing.B) {
-	var buf bytes.Buffer
-	logger := audit.NewWriterLogger(&buf)
+	// Use io.Discard to eliminate buffer-growth noise so the benchmark
+	// measures the middleware logic (status capture, struct build, JSON
+	// serialise) rather than allocator/GC pressure from an ever-growing
+	// bytes.Buffer.
+	logger := audit.NewWriterLogger(io.Discard)
 	h := middleware.AuditWithLogger(logger)(echoHandler(http.StatusOK))
 
+	// Pre-build a single request and recorder; httptest.NewRequest allocations
+	// would otherwise dominate the measurement.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files", nil)
 	b.ResetTimer()
 	for b.Loop() {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/files", nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
 	}

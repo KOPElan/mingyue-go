@@ -37,7 +37,8 @@ func (rw *responseWriter) WriteHeader(code int) {
 // log noise, in accordance with ADR-006.
 //
 // The audit event captures: caller IP (Source), HTTP method+path (Action),
-// request path (Target), and outcome (Result / ErrorCode).
+// request path (Target), HTTP response status code (HTTPStatus), and outcome
+// (Result / ErrorCode when status >= 400).
 //
 // Usage:
 //
@@ -64,12 +65,13 @@ func AuditWithLogger(logger audit.Logger) func(http.Handler) http.Handler {
 			}
 
 			event := audit.AuditEvent{
-				Time:      start,
-				Source:    r.RemoteAddr,
-				Action:    r.Method + " " + r.URL.Path,
-				Target:    r.URL.Path,
-				Result:    result,
-				ErrorCode: errCode,
+				Time:       start,
+				Source:     r.RemoteAddr,
+				Action:     r.Method + " " + r.URL.Path,
+				Target:     r.URL.Path,
+				Result:     result,
+				ErrorCode:  errCode,
+				HTTPStatus: rw.statusCode,
 			}
 			// Log on a best-effort basis; a logging failure must not affect
 			// the HTTP response already written to the client.
