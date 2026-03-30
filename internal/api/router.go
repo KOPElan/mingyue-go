@@ -55,8 +55,15 @@ func NewRouter() *Router {
 	netMgr := netService.NewManager(auditLogger)
 	aclMgr := aclService.NewManager("", auditLogger)
 
+	// Wrap the handler with HTTP-level audit middleware so that every mutating
+	// API call (POST/PUT/PATCH/DELETE) is recorded independently of the
+	// service-layer audit events (ADR-006: complementary coverage).
+	handler := middleware.AuditWithLogger(auditLogger)(
+		NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr, sambaUserMgr, netMgr, aclMgr),
+	)
+
 	return &Router{
-		Handler:     NewRouterWithDeps(monitor, procMgr, mountSvc, smartSvc, powerSvc, devSvc, fileMgr, shareMgr, sambaUserMgr, netMgr, aclMgr),
+		Handler:     handler,
 		auditLogger: auditLogger,
 	}
 }

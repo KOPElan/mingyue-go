@@ -1,8 +1,11 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"time"
+
+	"kopelan/mingyue-go/internal/audit"
 )
 
 // auditKey is an unexported context key type to avoid collisions.
@@ -28,27 +31,59 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// Audit is a placeholder audit-logging middleware.
-// In Phase 1 it captures the request metadata but does not yet write to the
-// audit log (the audit.Logger dependency will be injected in Phase 2).
+// AuditWithLogger returns a middleware that records HTTP-level audit events for
+// mutating requests (POST, PUT, PATCH, DELETE) using the provided audit.Logger.
+// Read-only methods (GET, HEAD, OPTIONS) are intentionally excluded to reduce
+// log noise, in accordance with ADR-006.
+//
+// The audit event captures: caller IP (Source), HTTP method+path (Action),
+// request path (Target), and outcome (Result / ErrorCode).
 //
 // Usage:
 //
-//	mux.Handle("/api/v1/...", middleware.Audit(myHandler))
-func Audit(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+//	handler = middleware.AuditWithLogger(auditLogger)(handler)
+func AuditWithLogger(logger audit.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Only audit mutating operations; skip read-only methods.
+			if !isMutatingMethod(r.Method) {
+				next.ServeHTTP(w, r)
+				return
+			}
 
-		// TODO(phase-2): inject audit.Logger, capture the record below, and
-		// write an AuditEvent after next.ServeHTTP returns (including outcome
-		// and error code when statusCode >= 400).
-		// record := AuditRecord{
-		// 	StartTime:  time.Now(),
-		// 	Method:     r.Method,
-		// 	Path:       r.URL.Path,
-		// 	RemoteAddr: r.RemoteAddr,
-		// }
+			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+			start := time.Now().UTC()
 
-		next.ServeHTTP(rw, r)
-	})
+			next.ServeHTTP(rw, r)
+
+			result := "success"
+			errCode := ""
+			if rw.statusCode >= http.StatusBadRequest {
+				result = "failure"
+				errCode = fmt.Sprintf("HTTP_%d", rw.statusCode)
+			}
+
+			event := audit.AuditEvent{
+				Time:      start,
+				Source:    r.RemoteAddr,
+				Action:    r.Method + " " + r.URL.Path,
+				Target:    r.URL.Path,
+				Result:    result,
+				ErrorCode: errCode,
+			}
+			// Log on a best-effort basis; a logging failure must not affect
+			// the HTTP response already written to the client.
+			_ = logger.Log(event)
+		})
+	}
+}
+
+// isMutatingMethod reports whether the HTTP method modifies state.
+func isMutatingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
 }
