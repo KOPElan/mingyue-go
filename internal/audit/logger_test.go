@@ -3,6 +3,7 @@ package audit_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -150,5 +151,42 @@ func TestFileLogger_MultipleLines(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	if len(lines) != 3 {
 		t.Errorf("expected 3 lines, got %d:\n%s", len(lines), buf.String())
+	}
+}
+
+// ─── benchmarks ──────────────────────────────────────────────────────────────
+
+// BenchmarkFileLogger_Log measures the throughput of the audit logger for a
+// typical success event. The PRD requires monitoring-class operations to
+// complete with P95 < 200 ms; audit logging is on the critical path of every
+// mutating operation and must remain sub-millisecond.
+func BenchmarkFileLogger_Log(b *testing.B) {
+	logger := audit.NewWriterLogger(io.Discard)
+	event := audit.AuditEvent{
+		Source: "api",
+		Action: "disk.mount",
+		Target: "/mnt/data",
+		Result: "success",
+	}
+	b.ResetTimer()
+	for b.Loop() {
+		_ = logger.Log(event)
+	}
+}
+
+// BenchmarkFileLogger_Log_Failure measures the overhead of logging a failure
+// event (which additionally serialises an ErrorCode field).
+func BenchmarkFileLogger_Log_Failure(b *testing.B) {
+	logger := audit.NewWriterLogger(io.Discard)
+	event := audit.AuditEvent{
+		Source:    "api",
+		Action:    "process.kill",
+		Target:    "1234",
+		Result:    "failure",
+		ErrorCode: "NOT_FOUND",
+	}
+	b.ResetTimer()
+	for b.Loop() {
+		_ = logger.Log(event)
 	}
 }

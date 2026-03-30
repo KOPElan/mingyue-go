@@ -451,7 +451,20 @@ go mod tidy
 
 # 代码检查
 go vet ./...
+
+# 运行性能基准测试（可选，用于验证 P95 延迟目标）
+go test ./internal/audit/... ./internal/service/system/... ./internal/api/middleware/... -bench=. -benchmem
 ```
+
+**性能基准参考**（AMD EPYC 7763，基准测试环境）：
+
+| 路径 | 操作 | 参考耗时 |
+|------|------|----------|
+| `audit.FileLogger.Log` | 成功事件序列化写入 | ~1 µs |
+| `system.Monitor.Snapshot` | 系统快照结构构建（stub 采集器） | ~90 ns |
+| `middleware.AuditWithLogger` | HTTP 层审计中间件（含写日志） | ~3 µs |
+
+> PRD 要求监控类接口 P95 延迟 < 200 ms；上表数值为核心组件基准，不含 OS 系统调用耗时。
 
 **配置与日志路径**：
 
@@ -514,6 +527,7 @@ go vet ./...
 | **Phase 5** ✅ | 网络管理 + 权限/ACL：网络接口只读查询与受控变更（up/down/dhcp）、文件/目录权限与 POSIX ACL 查询（getfacl）与设置（setfacl）、审计日志 | 已完成 |
 | **Phase 6** ✅ | OpenAPI 规范 + CI 文档同步 + 安装脚本（`install.sh`/`uninstall.sh`）| 已完成 |
 | **Phase 7** ✅ | 认证持久化 + 局域网发现：API 密钥文件存储（`/var/lib/mingyue/apikeys.json`）、首次启动自动生成 admin 密钥、`mingyue auth keygen/list/revoke` 密钥管理命令、UDP 多播 LAN 发现（`224.0.0.251:7071`）、`mingyue agent discover` 命令、Web 前端接入指南（`docs/web-integration.md`）| 已完成 |
+| **Code Quality** ✅ | HTTP 层审计中间件完善（`middleware.AuditWithLogger`，ADR-006 双层互补）、middleware 包单元测试、性能基准测试（audit logger / system monitor），文档补充性能基准参考值 | 已完成 |
 
 ## License
 

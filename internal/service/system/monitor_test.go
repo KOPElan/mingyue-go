@@ -141,3 +141,29 @@ func TestMonitor_Snapshot(t *testing.T) {
 		})
 	}
 }
+
+// ─── benchmarks ──────────────────────────────────────────────────────────────
+
+// BenchmarkMonitor_Snapshot measures the overhead of the Monitor.Snapshot path
+// using a stub Collector (i.e. without real /proc reads).  This isolates the
+// struct-building and error-handling overhead, not the OS data-collection cost.
+// The PRD states a P95 target of < 200 ms for monitoring-class interfaces.
+func BenchmarkMonitor_Snapshot(b *testing.B) {
+	okVM := &mem.VirtualMemoryStat{
+		Total:       8 * 1024 * 1024 * 1024,
+		Used:        4 * 1024 * 1024 * 1024,
+		UsedPercent: 50.0,
+	}
+	collector := &stubCollector{
+		cpuPercent: 25.5,
+		vmStat:     okVM,
+		uptime:     3600,
+	}
+	m := NewMonitorWithCollector(collector)
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for b.Loop() {
+		_, _ = m.Snapshot(ctx)
+	}
+}
