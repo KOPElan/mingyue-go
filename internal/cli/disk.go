@@ -63,12 +63,13 @@ func newDiskListCmd() *cobra.Command {
 // newDiskMountCmd returns `mingyue disk mount` — mounts a filesystem.
 func newDiskMountCmd() *cobra.Command {
 	var (
-		fsType   string
-		readOnly bool
-		options  string
-		username string
-		password string
-		domain   string
+		fsType     string
+		readOnly   bool
+		options    string
+		username   string
+		password   string
+		domain     string
+		persistent bool
 	)
 
 	cmd := &cobra.Command{
@@ -77,10 +78,14 @@ func newDiskMountCmd() *cobra.Command {
 		Long: `Mount a filesystem at the given mount point.
 
 For CIFS mounts, use --username and --password flags to provide credentials.
+The source may be written as server/share, //server/share, or \\server\share.
 Credentials are passed via a secure temporary file and are never logged.
+Use --persistent to also write the mount to /etc/fstab. Persistent CIFS mounts
+store credentials in a root-only file under /etc/mingyue/cifs-credentials.
 
 Examples:
   mingyue disk mount --type ext4 /dev/sdb1 /mnt/data
+  mingyue disk mount --type ext4 --persistent /dev/sdb1 /mnt/data
   mingyue disk mount --type nfs //server/export /mnt/nfs
   mingyue disk mount --type cifs //server/share /mnt/share --username user --password pass`,
 		Args: cobra.ExactArgs(2),
@@ -104,6 +109,7 @@ Examples:
 				Username:   username,
 				Password:   password,
 				Domain:     domain,
+				Persistent: persistent,
 			}
 
 			if err := svc.Mount(ctx, opts, "cli"); err != nil {
@@ -129,6 +135,7 @@ Examples:
 	cmd.Flags().StringVar(&username, "username", "", "CIFS username (never logged)")
 	cmd.Flags().StringVar(&password, "password", "", "CIFS password (never logged)")
 	cmd.Flags().StringVar(&domain, "domain", "", "CIFS domain (optional)")
+	cmd.Flags().BoolVar(&persistent, "persistent", false, "persist the mount in /etc/fstab")
 	return cmd
 }
 

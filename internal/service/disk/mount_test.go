@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -135,6 +137,25 @@ func TestMountService_List_ReaderError(t *testing.T) {
 }
 
 // ─── MountService.Mount ──────────────────────────────────────────────────────
+
+func newPersistentTestService(t *testing.T, reader MountsReader, commander Commander, al audit.Logger, fstabContent string) (*MountService, string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	fstabPath := filepath.Join(dir, "fstab")
+	if fstabContent != "" {
+		if err := os.WriteFile(fstabPath, []byte(fstabContent), 0o600); err != nil {
+			t.Fatalf("write test fstab: %v", err)
+		}
+	}
+
+	credentialsDir := filepath.Join(dir, "cifs-credentials")
+	svc := newMountService(reader, commander, &fstabPersister{
+		fstabPath:    fstabPath,
+		cifsCredsDir: credentialsDir,
+	}, al)
+	return svc, fstabPath, credentialsDir
+}
 
 func TestMountService_Mount_Generic_Success(t *testing.T) {
 	// Start with no active mounts so the idempotency check passes.
@@ -276,6 +297,84 @@ func TestMountService_Mount_CIFS_CredentialsNotInArgs(t *testing.T) {
 	}
 }
 
+func TestMountService_Mount_CIFS_NormalizesSourceWithoutUNCPrefix(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{}
+	svc := NewMountServiceWithDeps(reader, cmd, nil)
+
+	opts := MountOptions{
+		Source:     "192.168.1.2/ssd",
+		MountPoint: "/mnt/ssd",
+		FSType:     "cifs",
+		Username:   "user1",
+		Password:   "secretpassword",
+	}
+	if err := svc.Mount(context.Background(), opts, "cli"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cmd.calls) == 0 {
+		t.Fatal("expected mount command call")
+	}
+	args := cmd.calls[0]
+	srcIdx := sliceIndex(args, "//192.168.1.2/ssd")
+	if srcIdx < 0 {
+		t.Fatalf("expected normalized CIFS source in args, got %v", args)
+	}
+	mountPointIdx := sliceIndex(args, "/mnt/ssd")
+	if mountPointIdx < 0 {
+		t.Fatalf("expected mountpoint in args, got %v", args)
+	}
+	if srcIdx > mountPointIdx {
+		t.Fatalf("expected normalized CIFS source to appear before mountpoint, got %v", args)
+	}
+}
+
+func TestMountService_Mount_CIFS_InvalidSourceReturnsErrInvalidInput(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{}
+	svc := NewMountServiceWithDeps(reader, cmd, nil)
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     "192.168.1.2",
+		MountPoint: "/mnt/ssd",
+		FSType:     "cifs",
+		Username:   "user1",
+		Password:   "secretpassword",
+	}, "cli")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	assertErrorCode(t, err, apperrors.ErrInvalidInput)
+	if len(cmd.calls) != 0 {
+		t.Fatalf("expected no mount command call, got %d", len(cmd.calls))
+	}
+}
+
+func TestMountService_Mount_CIFS_NormalizesBackslashUNCSource(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{}
+	svc := NewMountServiceWithDeps(reader, cmd, nil)
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     `\\192.168.1.2\ssd`,
+		MountPoint: "/mnt/ssd",
+		FSType:     "cifs",
+		Username:   "user1",
+		Password:   "secretpassword",
+	}, "cli")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cmd.calls) == 0 {
+		t.Fatal("expected mount command call")
+	}
+	if sliceIndex(cmd.calls[0], "//192.168.1.2/ssd") < 0 {
+		t.Fatalf("expected normalized CIFS source in args, got %v", cmd.calls[0])
+	}
+}
+
 // sliceIndex returns the index of target in s, or -1 if not found.
 func sliceIndex(s []string, target string) int {
 	for i, v := range s {
@@ -300,6 +399,228 @@ func TestMountService_Mount_CommandFails_AuditsFailure(t *testing.T) {
 	assertErrorCode(t, err, apperrors.ErrInternal)
 	if len(al.events) == 0 || al.events[0].Result != "failure" {
 		t.Error("expected failure audit event")
+	}
+}
+
+func TestMountService_Mount_CommandFailure_IncludesMountOutput(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{
+		output: []byte("mount: /mnt/test: mount point does not exist\n"),
+		err:    errors.New("exit status 1"),
+	}
+	svc := NewMountServiceWithDeps(reader, cmd, nil)
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     "/dev/sdb1",
+		MountPoint: "/mnt/test",
+		FSType:     "ext4",
+	}, "cli")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	assertErrorCode(t, err, apperrors.ErrInternal)
+	if !strings.Contains(err.Error(), "mount point does not exist") {
+		t.Fatalf("expected mount output in error, got %v", err)
+	}
+}
+
+func TestMountService_Mount_CommandFailure_NormalizesMultilineOutput(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{
+		output: []byte("mount error(2): No such file or directory\r\nRefer to the mount.cifs(8) manual page\r\n"),
+		err:    errors.New("exit status 1"),
+	}
+	svc := NewMountServiceWithDeps(reader, cmd, nil)
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     "192.168.1.2/ssd",
+		MountPoint: "/mnt/ssd",
+		FSType:     "cifs",
+		Username:   "user1",
+		Password:   "test-password",
+	}, "cli")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	assertErrorCode(t, err, apperrors.ErrInternal)
+	if !strings.Contains(err.Error(), "mount error(2): No such file or directory: Refer to the mount.cifs(8) manual page") {
+		t.Fatalf("expected normalized multiline mount output in error, got %v", err)
+	}
+}
+
+func TestMountService_Mount_Persistent_WritesFstabEntry(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{}
+	svc, fstabPath, _ := newPersistentTestService(t, reader, cmd, nil, "# existing\n")
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     "/dev/sdb1",
+		MountPoint: "/mnt/persist",
+		FSType:     "ext4",
+		Persistent: true,
+	}, "cli")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content, err := os.ReadFile(fstabPath)
+	if err != nil {
+		t.Fatalf("read fstab: %v", err)
+	}
+	if !strings.Contains(string(content), "/dev/sdb1\t/mnt/persist\text4\tdefaults\t0\t0") {
+		t.Fatalf("expected persistent fstab entry, got %s", string(content))
+	}
+}
+
+func TestMountService_Mount_Persistent_UpdatesExistingFstabEntry(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{}
+	svc, fstabPath, _ := newPersistentTestService(t, reader, cmd, nil, "/dev/sdb1\t/mnt/persist\text4\tdefaults\t0\t0\n")
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     "/dev/sdc1",
+		MountPoint: "/mnt/persist",
+		FSType:     "xfs",
+		Persistent: true,
+	}, "cli")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content, err := os.ReadFile(fstabPath)
+	if err != nil {
+		t.Fatalf("read fstab: %v", err)
+	}
+	got := string(content)
+	if strings.Count(got, "/mnt/persist") != 1 {
+		t.Fatalf("expected single updated entry, got %s", got)
+	}
+	if !strings.Contains(got, "/dev/sdc1\t/mnt/persist\txfs\tdefaults\t0\t0") {
+		t.Fatalf("expected updated fstab entry, got %s", got)
+	}
+}
+
+func TestMountService_Mount_Persistent_CIFSWritesCredentialsFileAndFstabEntry(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{}
+	svc, fstabPath, credsDir := newPersistentTestService(t, reader, cmd, nil, "")
+
+	// Use a backslash-style CIFS source here and verify the persisted fstab entry
+	// is normalized to the canonical //server/share form.
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     `\\server\share`,
+		MountPoint: "/mnt/cifs-persist",
+		FSType:     "cifs",
+		Username:   "user1",
+		Password:   "test-password",
+		Domain:     "TESTDOMAIN",
+		Persistent: true,
+	}, "cli")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content, err := os.ReadFile(fstabPath)
+	if err != nil {
+		t.Fatalf("read fstab: %v", err)
+	}
+	if !strings.Contains(string(content), "//server/share\t/mnt/cifs-persist\tcifs\tcredentials=") {
+		t.Fatalf("expected normalized CIFS entry with credentials file, got %s", string(content))
+	}
+
+	files, err := os.ReadDir(credsDir)
+	if err != nil {
+		t.Fatalf("read credentials dir: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected exactly one credentials file, got %d", len(files))
+	}
+
+	credPath := filepath.Join(credsDir, files[0].Name())
+	credContent, err := os.ReadFile(credPath)
+	if err != nil {
+		t.Fatalf("read credentials file: %v", err)
+	}
+	credText := string(credContent)
+	if !strings.Contains(credText, "username=user1\n") ||
+		!strings.Contains(credText, "password=test-password\n") ||
+		!strings.Contains(credText, "domain=TESTDOMAIN\n") {
+		t.Fatalf("unexpected credentials content: %q", credText)
+	}
+
+	info, err := os.Stat(credPath)
+	if err != nil {
+		t.Fatalf("stat credentials file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("credentials file permissions: got %o want %o", got, 0o600)
+	}
+}
+
+func TestMountService_Mount_Persistent_CIFSShortSourceNormalizesInFstab(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{}
+	svc, fstabPath, _ := newPersistentTestService(t, reader, cmd, nil, "")
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     "server/share",
+		MountPoint: "/mnt/cifs-short",
+		FSType:     "cifs",
+		Username:   "user1",
+		Password:   "test-password",
+		Persistent: true,
+	}, "cli")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content, err := os.ReadFile(fstabPath)
+	if err != nil {
+		t.Fatalf("read fstab: %v", err)
+	}
+	if !strings.Contains(string(content), "//server/share\t/mnt/cifs-short\tcifs\tcredentials=") {
+		t.Fatalf("expected short CIFS source to normalize in fstab, got %s", string(content))
+	}
+}
+
+func TestMountService_Mount_Persistent_CIFSInlineCredentialsInOptionsRejected(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{}
+	svc, _, _ := newPersistentTestService(t, reader, cmd, nil, "")
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     "//server/share",
+		MountPoint: "/mnt/cifs-persist",
+		FSType:     "cifs",
+		Options:    "username=inline,password=inline",
+		Persistent: true,
+	}, "cli")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	assertErrorCode(t, err, apperrors.ErrInvalidInput)
+	if len(cmd.calls) != 0 {
+		t.Fatalf("expected no mount command call, got %d", len(cmd.calls))
+	}
+}
+
+func TestMountService_Mount_Persistent_WhitespaceInMountpointRejected(t *testing.T) {
+	reader := &stubMountsReader{content: ""}
+	cmd := &stubCommander{}
+	svc, _, _ := newPersistentTestService(t, reader, cmd, nil, "")
+
+	err := svc.Mount(context.Background(), MountOptions{
+		Source:     "/dev/sdb1",
+		MountPoint: "/mnt/bad point",
+		FSType:     "ext4",
+		Persistent: true,
+	}, "cli")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	assertErrorCode(t, err, apperrors.ErrInvalidInput)
+	if len(cmd.calls) != 0 {
+		t.Fatalf("expected no mount command call, got %d", len(cmd.calls))
 	}
 }
 
